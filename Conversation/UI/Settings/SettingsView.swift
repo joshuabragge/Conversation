@@ -58,6 +58,12 @@ struct SettingsView: View {
                 Section("Sound") {
                     Toggle("Earcons (processing / done / didn't catch that)", isOn: $audioCuesEnabled)
                 }
+
+                Section("Debugging") {
+                    NavigationLink("Debug Log") {
+                        DebugLogView()
+                    }
+                }
             }
             .navigationTitle("Settings")
             .toolbar {

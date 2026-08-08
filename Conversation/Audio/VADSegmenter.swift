@@ -97,6 +97,7 @@ final class VADSegmenter: TurnSegmentationSource {
                     state = .speech
                     utteranceElapsed = speechAccumulated
                     silenceAccumulated = 0
+                    AppLog.debug(.vad, "utterance start (relativeEnergy=\(relative), noiseFloor=\(noiseFloor))")
                     onUtteranceStart?()
                 }
             } else {
@@ -112,6 +113,8 @@ final class VADSegmenter: TurnSegmentationSource {
             }
             if silenceAccumulated >= config.trailingSilenceDuration
                 || utteranceElapsed >= config.maxUtteranceDuration {
+                let reason = utteranceElapsed >= config.maxUtteranceDuration ? "max duration" : "trailing silence"
+                AppLog.debug(.vad, "utterance end (\(reason), elapsed=\(utteranceElapsed)s)")
                 state = .silence
                 speechAccumulated = 0
                 silenceAccumulated = 0

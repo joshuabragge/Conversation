@@ -92,6 +92,18 @@ verify those manually on a real device with headphones, not the simulator.
   from silent failure to the UI. This exact pattern is why a real
   `'!pri'` error was invisible until the delay was added.
 
+## Logging
+
+`AppLog` (Logging/AppLog.swift) mirrors every log line to both `os.Logger`
+(Xcode console / Console.app when tethered) and an in-memory ring buffer
+viewable in-app via Settings > Debug Log, or from a link on the Welcome
+screen (reachable even mid-onboarding, before Settings exists). Use
+`AppLog.{debug,info,error}(_ category:, _ message:)` — safe to call from
+any thread, including the real-time audio thread. When adding a new
+module, add log lines at its state transitions and failure points, not
+just its happy path — the whole point is diagnosing real-device behavior
+that can't be reproduced in the simulator.
+
 ## Repo notes
 
 Public repo, licensed [PolyForm Noncommercial 1.0.0](LICENSE.md) — free for

@@ -45,12 +45,23 @@ final class LanguageIdentifier: ObservableObject {
     /// fallback for whenever onboarding's prewarm didn't happen or didn't
     /// finish (e.g. the user backgrounded the app during it).
     private func loadedWhisperKit() async throws -> WhisperKit {
-        if let whisperKit { return whisperKit }
+        if let whisperKit {
+            AppLog.debug(.languageID, "loadedWhisperKit: already loaded, reusing")
+            return whisperKit
+        }
         isLoadingModel = true
         defer { isLoadingModel = false }
-        let kit = try await WhisperKit(WhisperKitConfig(model: "tiny", verbose: false, logLevel: .none))
-        whisperKit = kit
-        return kit
+        AppLog.info(.languageID, "loadedWhisperKit: loading tiny model (downloads on first run)")
+        let start = Date()
+        do {
+            let kit = try await WhisperKit(WhisperKitConfig(model: "tiny", verbose: false, logLevel: .none))
+            whisperKit = kit
+            AppLog.info(.languageID, "loadedWhisperKit: ready in \(Date().timeIntervalSince(start))s")
+            return kit
+        } catch {
+            AppLog.error(.languageID, "loadedWhisperKit: failed after \(Date().timeIntervalSince(start))s: \(error.localizedDescription)")
+            throw error
+        }
     }
 
     /// Triggers the model download/load ahead of time, so onboarding can
@@ -73,12 +84,18 @@ final class LanguageIdentifier: ObservableObject {
     /// (`langProbs`), not just the single winning language, which is what
     /// M6's confidence-gated accept/reject scheme needs.
     func identify(fileURL: URL, candidates: [Locale.Language]) async throws -> LanguageIdentificationResult {
+        AppLog.info(.languageID, "identify: starting for \(fileURL.lastPathComponent), candidates=\(candidates.map(\.minimalIdentifier))")
+        let start = Date()
         let kit = try await loadedWhisperKit()
         let samples = try AudioProcessor.loadAudioAsFloatArray(fromPath: fileURL.path, channelMode: .sumChannels(nil))
-        let (_, langProbs) = try await kit.detectLangauge(audioArray: samples)
+        AppLog.debug(.languageID, "identify: loaded \(samples.count) samples from file")
+        let (topLanguage, langProbs) = try await kit.detectLangauge(audioArray: samples)
+        AppLog.info(.languageID, "identify: WhisperKit's top guess=\(topLanguage), full probs (candidates only)=\(candidates.map { "\($0.minimalIdentifier)=\(langProbs[$0.minimalIdentifier] ?? 0)" })")
 
         let rawProbs = candidates.map { Double(langProbs[$0.languageCode?.identifier ?? ""] ?? 0) }
-        return try Self.pickWinner(candidates: candidates, rawProbs: rawProbs)
+        let result = try Self.pickWinner(candidates: candidates, rawProbs: rawProbs)
+        AppLog.info(.languageID, "identify: picked \(result.language.minimalIdentifier) confidence=\(result.confidence) (took \(Date().timeIntervalSince(start))s)")
+        return result
     }
 
     /// Pure and independently unit-testable: renormalizes `rawProbs`

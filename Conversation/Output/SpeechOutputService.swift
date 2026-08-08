@@ -61,19 +61,24 @@ final class SpeechOutputService: NSObject, ObservableObject {
     /// it used to just `return`, which produced translated text with
     /// dead silence and no way to tell why (see `CLAUDE.md`).
     func speak(_ text: String, language: Locale.Language) async throws {
+        AppLog.info(.speechOutput, "speak: \"\(text)\" in \(language.minimalIdentifier), \(availableVoices(for: language).count) voice(s) available")
         guard let voice = voice(for: language) else {
+            AppLog.error(.speechOutput, "speak: no voice available for \(language.minimalIdentifier)")
             throw SpeechOutputError.noVoiceAvailable(language)
         }
+        AppLog.debug(.speechOutput, "speak: using voice \(voice.identifier) (\(voice.name))")
 
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = voice
         utterance.rate = rate
 
         isSpeaking = true
+        let start = Date()
         await withCheckedContinuation { continuation in
             self.continuation = continuation
             synthesizer.speak(utterance)
         }
+        AppLog.info(.speechOutput, "speak: finished after \(Date().timeIntervalSince(start))s")
     }
 
     func stop() {

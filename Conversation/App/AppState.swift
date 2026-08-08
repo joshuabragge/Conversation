@@ -21,12 +21,15 @@ final class AppState: ObservableObject {
            let pair = try? JSONDecoder().decode(LanguagePair.self, from: data) {
             languagePair = pair
             screen = .conversation
+            AppLog.info(.onboarding, "AppState.init: found persisted pair \(pair.first.minimalIdentifier)/\(pair.second.minimalIdentifier), skipping onboarding")
         } else {
             screen = .onboarding
+            AppLog.info(.onboarding, "AppState.init: no persisted pair, starting onboarding")
         }
     }
 
     func completeOnboarding(with pair: LanguagePair) {
+        AppLog.info(.onboarding, "completeOnboarding: \(pair.first.minimalIdentifier)/\(pair.second.minimalIdentifier)")
         languagePair = pair
         if let data = try? JSONEncoder().encode(pair) {
             UserDefaults.standard.set(data, forKey: Self.languagePairKey)
@@ -38,6 +41,7 @@ final class AppState: ObservableObject {
     /// forgetting the previous pair unless the user actually finishes
     /// picking a new one.
     func changeLanguagePair() {
+        AppLog.info(.onboarding, "changeLanguagePair: returning to onboarding")
         screen = .onboarding
     }
 }

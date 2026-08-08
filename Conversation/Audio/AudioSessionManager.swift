@@ -43,22 +43,39 @@ final class AudioSessionManager: ObservableObject {
     /// Mic active, no quality-sensitive playback in this state — fine for
     /// a Bluetooth accessory to sit in HFP here.
     func activateListening() throws {
-        try session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
-        state = .listening
+        do {
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            state = .listening
+            AppLog.info(.audioSession, "activateListening: succeeded, route=\(self.routeDescription)")
+        } catch {
+            AppLog.error(.audioSession, "activateListening: threw \(error.localizedDescription)")
+            throw error
+        }
     }
 
     /// Mic inactive — lets Bluetooth renegotiate up to A2DP for higher
     /// quality TTS output than the Listening config's HFP would allow.
     func activateSpeaking() throws {
-        try session.setCategory(.playback, mode: .spokenAudio, options: [])
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
-        state = .speaking
+        do {
+            try session.setCategory(.playback, mode: .spokenAudio, options: [])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            state = .speaking
+            AppLog.info(.audioSession, "activateSpeaking: succeeded, route=\(self.routeDescription)")
+        } catch {
+            AppLog.error(.audioSession, "activateSpeaking: threw \(error.localizedDescription)")
+            throw error
+        }
     }
 
     func deactivate() {
         try? session.setActive(false, options: .notifyOthersOnDeactivation)
         state = .inactive
+        AppLog.info(.audioSession, "deactivate")
+    }
+
+    private var routeDescription: String {
+        session.currentRoute.outputs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ", ")
     }
 
     // MARK: - Route / interruption notifications
@@ -77,10 +94,14 @@ final class AudioSessionManager: ObservableObject {
     }
 
     @objc private func routeChanged(_ note: Notification) {
+        let reason = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
+            .flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
         Task { @MainActor in
             let wasConnected = self.isHeadphonesConnected
             self.refreshHeadphoneStatus()
+            AppLog.info(.audioSession, "routeChanged: reason=\(String(describing: reason)), headphonesConnected=\(self.isHeadphonesConnected), route=\(self.routeDescription)")
             if wasConnected, !self.isHeadphonesConnected {
+                AppLog.info(.audioSession, "routeChanged: headphones disconnected, notifying")
                 self.onHeadphonesDisconnected?()
             }
         }
@@ -92,6 +113,7 @@ final class AudioSessionManager: ObservableObject {
               let type = AVAudioSession.InterruptionType(rawValue: typeValue)
         else { return }
         Task { @MainActor in
+            AppLog.info(.audioSession, "interruption: \(type == .began ? "began" : "ended")")
             switch type {
             case .began: self.onInterruptionBegan?()
             case .ended: self.onInterruptionEnded?()

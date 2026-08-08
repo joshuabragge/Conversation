@@ -58,7 +58,7 @@ struct LanguagePairPickerView: View {
         }
         .padding(.horizontal, 32)
         .task {
-            available = SupportedLanguages.availableOnThisDevice()
+            available = await SupportedLanguages.availableOnThisDevice()
             first = available.first(where: { $0.minimalIdentifier == "en" }) ?? available.first
             second = available.first(where: { $0 != first })
         }

@@ -17,7 +17,9 @@ import Foundation
 /// initializer.
 @MainActor
 final class ConversationLoopController: ObservableObject {
-    @Published private(set) var state: TurnState = .idle
+    @Published private(set) var state: TurnState = .idle {
+        didSet { AppLog.info(.conversation, "state: \(oldValue) -> \(state)") }
+    }
     @Published private(set) var heardText: String = ""
     @Published private(set) var heardLanguage: Locale.Language?
     @Published private(set) var translatedText: String = ""
@@ -74,7 +76,11 @@ final class ConversationLoopController: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
-        guard state == .idle else { return }
+        AppLog.info(.conversation, "start() called, languagePair=\(languagePair.first.minimalIdentifier)/\(languagePair.second.minimalIdentifier)")
+        guard state == .idle else {
+            AppLog.debug(.conversation, "start(): ignored, state was already \(state)")
+            return
+        }
         guard translationService != nil else {
             state = .error("Not ready yet — try again in a moment.")
             return
@@ -91,11 +97,13 @@ final class ConversationLoopController: ObservableObject {
             }
             state = .listening
         } catch {
+            AppLog.error(.conversation, "start(): failed: \(error.localizedDescription)")
             state = .error("Couldn't start listening: \(error.localizedDescription)")
         }
     }
 
     func stop() {
+        AppLog.info(.conversation, "stop() called")
         mic.stopEngine()
         audioSession.deactivate()
         state = .idle
@@ -104,14 +112,21 @@ final class ConversationLoopController: ObservableObject {
     // MARK: - VAD-driven turn boundaries
 
     private func handleUtteranceStart() {
-        guard state == .listening else { return }
+        guard state == .listening else {
+            AppLog.debug(.conversation, "handleUtteranceStart: ignored, state was \(state)")
+            return
+        }
         state = .capturing
         mic.beginUtteranceFile()
     }
 
     private func handleUtteranceEnd() {
-        guard state == .capturing else { return }
+        guard state == .capturing else {
+            AppLog.debug(.conversation, "handleUtteranceEnd: ignored, state was \(state)")
+            return
+        }
         guard let fileURL = mic.endUtteranceFile() else {
+            AppLog.error(.conversation, "handleUtteranceEnd: no file captured, returning to listening")
             state = .listening
             return
         }
@@ -123,6 +138,7 @@ final class ConversationLoopController: ObservableObject {
 
     private func handleHeadphonesDisconnected() {
         guard state != .idle else { return }
+        AppLog.info(.conversation, "handleHeadphonesDisconnected: pausing")
         stop()
         state = .error("Headphones disconnected — reconnect and tap start to resume.")
     }
@@ -130,6 +146,7 @@ final class ConversationLoopController: ObservableObject {
     private func handleInterruptionBegan() {
         wasRunningBeforeInterruption = state != .idle
         guard wasRunningBeforeInterruption else { return }
+        AppLog.info(.conversation, "handleInterruptionBegan: pausing")
         stop()
         state = .error("Paused for a call or other audio — tap start to resume.")
     }
@@ -139,6 +156,7 @@ final class ConversationLoopController: ObservableObject {
         // resume" signal has enough edge cases (some interruptions don't
         // want automatic resumption) that surfacing a manual restart is
         // safer than guessing, especially unverified on real hardware.
+        AppLog.info(.conversation, "handleInterruptionEnded: not auto-resuming, waiting for manual start()")
         wasRunningBeforeInterruption = false
     }
 
@@ -177,7 +195,12 @@ final class ConversationLoopController: ObservableObject {
     // MARK: - Turn pipeline
 
     private func process(fileURL: URL) async {
-        defer { try? FileManager.default.removeItem(at: fileURL) }
+        AppLog.info(.conversation, "process: starting turn for \(fileURL.lastPathComponent), manualOverride=\(manualOverride?.minimalIdentifier ?? "none (auto)")")
+        let turnStart = Date()
+        defer {
+            try? FileManager.default.removeItem(at: fileURL)
+            AppLog.info(.conversation, "process: turn finished in \(Date().timeIntervalSince(turnStart))s")
+        }
         guard let translationService else {
             state = .error("Not ready yet.")
             return
@@ -186,6 +209,7 @@ final class ConversationLoopController: ObservableObject {
         do {
             let spokenLanguage: Locale.Language
             if let manualOverride {
+                AppLog.info(.conversation, "process: using manual override \(manualOverride.minimalIdentifier)")
                 spokenLanguage = manualOverride
             } else {
                 state = .identifying
@@ -234,6 +258,7 @@ final class ConversationLoopController: ObservableObject {
             // produced a real on-device `OSStatus '!pri'`
             // (AVAudioSessionErrorInsufficientPriority) failure (see
             // MicrophoneInputManager's doc comment).
+            AppLog.debug(.conversation, "process: stopping mic engine before Speaking phase")
             mic.stopEngine()
             try audioSession.activateSpeaking()
             try await speechOutput.speak(translated, language: targetLanguage)
@@ -241,6 +266,7 @@ final class ConversationLoopController: ObservableObject {
 
             try audioSession.activateListening()
             vad.reset()
+            AppLog.debug(.conversation, "process: restarting mic engine after Speaking phase")
             try mic.restartEngine()
             state = .listening
         } catch is TimeoutError {

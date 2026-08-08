@@ -3,6 +3,8 @@ import SwiftUI
 struct WelcomeView: View {
     let onContinue: () -> Void
 
+    @State private var showDebugLog = false
+
     var body: some View {
         VStack(spacing: 20) {
             Spacer()
@@ -28,7 +30,17 @@ struct WelcomeView: View {
             }
             .buttonStyle(.borderedProminent)
             .padding(.horizontal, 32)
-            .padding(.bottom, 40)
+
+            // Reachable here specifically (not just from Settings) because
+            // onboarding problems need to be capturable before the user
+            // can reach the conversation screen and its Settings sheet.
+            Button("Debug Log") { showDebugLog = true }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 24)
+        }
+        .sheet(isPresented: $showDebugLog) {
+            DebugLogView()
         }
     }
 }

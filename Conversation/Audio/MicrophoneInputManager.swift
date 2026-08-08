@@ -50,6 +50,7 @@ final class MicrophoneInputManager {
         audioEngine.inputNode.removeTap(onBus: 0)
         audioFile = nil
         utteranceFileURL = nil
+        AppLog.debug(.mic, "stopEngine")
     }
 
     /// Resumes capture with the callback from the original `startEngine`
@@ -57,8 +58,22 @@ final class MicrophoneInputManager {
     /// Speaking-phase audio-session switch. Safe/no-op if never stopped
     /// or if `startEngine` was never called.
     func restartEngine() throws {
-        guard !audioEngine.isRunning, onBuffer != nil else { return }
+        guard !audioEngine.isRunning, onBuffer != nil else {
+            AppLog.debug(.mic, "restartEngine: no-op (isRunning=\(audioEngine.isRunning), hasCallback=\(onBuffer != nil))")
+            return
+        }
+        // `AVAudioEngine` node formats can go stale across an
+        // `AVAudioSession` category change (the input node's format after
+        // returning to `.playAndRecord` isn't guaranteed identical to
+        // before it left) — `reset()` before rebuilding the tap is a
+        // known mitigation for engines silently failing to actually
+        // capture after a route/category change. Unverified whether this
+        // was actually needed here vs. just defensive; check the logs
+        // from `installTapAndStart` if capture still misbehaves after a
+        // Speaking phase.
+        audioEngine.reset()
         try installTapAndStart()
+        AppLog.info(.mic, "restartEngine: succeeded")
     }
 
     /// Opens a fresh temp file and starts recording the live tap's buffers
@@ -70,6 +85,7 @@ final class MicrophoneInputManager {
             .appendingPathExtension("caf")
         audioFile = try? AVAudioFile(forWriting: url, settings: format.settings)
         utteranceFileURL = audioFile != nil ? url : nil
+        AppLog.debug(.mic, "beginUtteranceFile: \(url.lastPathComponent), opened=\(audioFile != nil)")
     }
 
     /// Stops recording and returns the file URL, or `nil` if nothing was
@@ -78,12 +94,14 @@ final class MicrophoneInputManager {
         defer { audioFile = nil }
         let url = utteranceFileURL
         utteranceFileURL = nil
+        AppLog.debug(.mic, "endUtteranceFile: \(url?.lastPathComponent ?? "nil")")
         return url
     }
 
     private func installTapAndStart() throws {
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
+        AppLog.debug(.mic, "installTapAndStart: format=\(format)")
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             if self?.audioFile != nil {
@@ -94,6 +112,12 @@ final class MicrophoneInputManager {
         }
 
         audioEngine.prepare()
-        try audioEngine.start()
+        do {
+            try audioEngine.start()
+            AppLog.info(.mic, "installTapAndStart: engine running")
+        } catch {
+            AppLog.error(.mic, "installTapAndStart: engine.start() threw: \(error.localizedDescription)")
+            throw error
+        }
     }
 }

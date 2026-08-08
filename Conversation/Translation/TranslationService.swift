@@ -31,36 +31,56 @@ final class TranslationService: ObservableObject {
     /// for repeated calls with the same pair; only restarts the underlying
     /// `.translationTask` when the pair changes.
     func translate(_ text: String, from source: Locale.Language, to target: Locale.Language) async throws -> String {
-        ensureStream(source: source, target: target)
-        return try await withCheckedThrowingContinuation { continuation in
-            requestContinuation?.yield(PendingRequest(text: text, continuation: continuation))
+        AppLog.info(.translation, "translate: \"\(text)\" \(source.minimalIdentifier)->\(target.minimalIdentifier)")
+        let start = Date()
+        let isNewPair = ensureStream(source: source, target: target)
+        if isNewPair {
+            AppLog.info(.translation, "translate: language pair changed, (re)triggering .translationTask session")
+        }
+        do {
+            let result = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+                requestContinuation?.yield(PendingRequest(text: text, continuation: continuation))
+            }
+            AppLog.info(.translation, "translate: \"\(result)\" (took \(Date().timeIntervalSince(start))s)")
+            return result
+        } catch {
+            AppLog.error(.translation, "translate: failed after \(Date().timeIntervalSince(start))s: \(error.localizedDescription)")
+            throw error
         }
     }
 
-    private func ensureStream(source: Locale.Language, target: Locale.Language) {
+    @discardableResult
+    private func ensureStream(source: Locale.Language, target: Locale.Language) -> Bool {
         if let pair = currentPair, pair.source == source, pair.target == target {
-            return
+            return false
         }
         currentPair = (source, target)
         let (stream, continuation) = AsyncStream<PendingRequest>.makeStream()
         pendingRequests = stream
         requestContinuation = continuation
         configuration = TranslationSession.Configuration(source: source, target: target)
+        return true
     }
 
     /// Invoked by `TranslationSessionHost`'s `.translationTask` closure.
     /// Runs for as long as the configuration stays unchanged and the host
     /// view stays mounted; SwiftUI cancels it automatically otherwise.
     fileprivate func run(session: TranslationSession) async {
-        guard let stream = pendingRequests else { return }
+        AppLog.info(.translation, "run: TranslationSession became available, draining request stream")
+        guard let stream = pendingRequests else {
+            AppLog.error(.translation, "run: no pendingRequests stream — shouldn't happen")
+            return
+        }
         for await request in stream {
             do {
                 let response = try await session.translate(request.text)
                 request.continuation.resume(returning: response.targetText)
             } catch {
+                AppLog.error(.translation, "run: session.translate threw: \(error.localizedDescription)")
                 request.continuation.resume(throwing: error)
             }
         }
+        AppLog.info(.translation, "run: request stream ended (session torn down or superseded)")
     }
 }
 
