@@ -154,6 +154,20 @@ final class ConversationLoopController: ObservableObject {
         state = .listening
     }
 
+    /// Same problem as `.rejected` above, but for real errors — the old
+    /// `catch` block set `.error` and immediately overwrote it with
+    /// `.listening` in the same synchronous scope, so any error caught
+    /// here (a missing TTS voice, a thrown `activateSpeaking()`, etc.) was
+    /// **never actually visible** — it looked identical to silent failure.
+    /// That's very likely why "no audio, no error shown" was happening.
+    private func showErrorThenResumeListening(_ message: String) async {
+        state = .error(message)
+        try? audioSession.activateListening()
+        try? await Task.sleep(nanoseconds: 2_500_000_000)
+        guard case .error = state else { return } // don't clobber a newer state
+        state = .listening
+    }
+
     // MARK: - Turn pipeline
 
     private func process(fileURL: URL) async {
@@ -169,9 +183,16 @@ final class ConversationLoopController: ObservableObject {
                 spokenLanguage = manualOverride
             } else {
                 state = .identifying
-                let idResult = try await languageIdentifier.identify(
-                    fileURL: fileURL, candidates: languagePair.languages
-                )
+                // Previously unguarded: a stuck WhisperKit model
+                // download/load (first run needs network) left
+                // "Identifying language…" showing forever with nothing to
+                // catch it. 45s covers a slow first-time download; a
+                // loaded model normally answers in well under a second.
+                let idResult = try await withTimeout(seconds: RecognitionConfig.languageIdentificationTimeout) {
+                    try await self.languageIdentifier.identify(
+                        fileURL: fileURL, candidates: self.languagePair.languages
+                    )
+                }
                 guard idResult.isConfident else {
                     AudioCueService.playRejected()
                     await showRejectedThenResumeListening()
@@ -203,15 +224,15 @@ final class ConversationLoopController: ObservableObject {
 
             state = .speaking
             try audioSession.activateSpeaking()
-            await speechOutput.speak(translated, language: targetLanguage)
+            try await speechOutput.speak(translated, language: targetLanguage)
             AudioCueService.playBackToListening()
 
             try audioSession.activateListening()
             state = .listening
+        } catch is TimeoutError {
+            await showErrorThenResumeListening("Timed out — check your network connection for first-time setup, then try again.")
         } catch {
-            state = .error(error.localizedDescription)
-            try? audioSession.activateListening()
-            state = .listening
+            await showErrorThenResumeListening(error.localizedDescription)
         }
     }
 }

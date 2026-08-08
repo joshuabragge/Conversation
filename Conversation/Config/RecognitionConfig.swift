@@ -44,4 +44,11 @@ enum RecognitionConfig {
     /// How long to wait on a `TranslationSession` call before treating it
     /// as stuck (see the M2 zero-size-host-view finding).
     static let translationTimeout: TimeInterval = 20.0
+
+    /// How long to wait on WhisperKit's language-ID pass before treating
+    /// it as stuck. Generous because the very first call on a device also
+    /// covers downloading the tiny model (needs network) — without this,
+    /// a stalled download or model load left "Identifying language…"
+    /// showing forever with nothing to catch it.
+    static let languageIdentificationTimeout: TimeInterval = 45.0
 }

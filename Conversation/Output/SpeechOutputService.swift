@@ -1,5 +1,16 @@
 import AVFoundation
 
+enum SpeechOutputError: LocalizedError {
+    case noVoiceAvailable(Locale.Language)
+
+    var errorDescription: String? {
+        switch self {
+        case .noVoiceAvailable(let language):
+            return "No voice installed for \(language.displayName) — add one in Settings > Accessibility > Spoken Content > Voices."
+        }
+    }
+}
+
 /// Wraps `AVSpeechSynthesizer` for per-locale text-to-speech output, with
 /// a user-configurable rate and per-language voice override for Settings.
 @MainActor
@@ -45,8 +56,14 @@ final class SpeechOutputService: NSObject, ObservableObject {
     }
 
     /// Speaks `text` in `language`, suspending until playback finishes.
-    func speak(_ text: String, language: Locale.Language) async {
-        guard let voice = voice(for: language) else { return }
+    ///
+    /// Throws rather than silently no-op-ing when no voice is installed —
+    /// it used to just `return`, which produced translated text with
+    /// dead silence and no way to tell why (see `CLAUDE.md`).
+    func speak(_ text: String, language: Locale.Language) async throws {
+        guard let voice = voice(for: language) else {
+            throw SpeechOutputError.noVoiceAvailable(language)
+        }
 
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = voice
