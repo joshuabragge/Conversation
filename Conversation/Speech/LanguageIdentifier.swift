@@ -66,9 +66,19 @@ final class LanguageIdentifier: ObservableObject {
 
     /// Triggers the model download/load ahead of time, so onboarding can
     /// show a real "downloading" state instead of the first conversation
-    /// turn silently stalling on it.
+    /// turn silently stalling on it. Also runs one throwaway inference on
+    /// silence: a real device log showed the *first* `detectLangauge` call
+    /// taking ~11s (vs. an expected sub-second for a "tiny" model) — almost
+    /// certainly CoreML JIT-compiling the model graph on first use, a
+    /// known characteristic, not a stuck download. Eating that cost here
+    /// means the first real conversation turn isn't the one that pays it.
     func prewarm() async throws {
-        _ = try await loadedWhisperKit()
+        let kit = try await loadedWhisperKit()
+        AppLog.info(.languageID, "prewarm: running warm-up inference to force any first-call JIT compilation now")
+        let start = Date()
+        let silence = [Float](repeating: 0, count: WhisperKit.sampleRate) // 1s of silence
+        _ = try? await kit.detectLangauge(audioArray: silence)
+        AppLog.info(.languageID, "prewarm: warm-up inference took \(Date().timeIntervalSince(start))s")
     }
 
     /// Returns which of `candidates` WhisperKit's tiny model thinks was
@@ -90,25 +100,53 @@ final class LanguageIdentifier: ObservableObject {
         let samples = try AudioProcessor.loadAudioAsFloatArray(fromPath: fileURL.path, channelMode: .sumChannels(nil))
         AppLog.debug(.languageID, "identify: loaded \(samples.count) samples from file")
         let (topLanguage, langProbs) = try await kit.detectLangauge(audioArray: samples)
-        AppLog.info(.languageID, "identify: WhisperKit's top guess=\(topLanguage), full probs (candidates only)=\(candidates.map { "\($0.minimalIdentifier)=\(langProbs[$0.minimalIdentifier] ?? 0)" })")
+        let debugProbs = candidates.map { language -> String in
+            let identifier = language.languageCode?.identifier ?? ""
+            guard let value = langProbs[identifier] else { return "\(identifier)=missing" }
+            return "\(identifier)=\(value)"
+        }
+        AppLog.info(.languageID, "identify: WhisperKit's top guess=\(topLanguage), full probs (candidates only)=\(debugProbs)")
 
-        let rawProbs = candidates.map { Double(langProbs[$0.languageCode?.identifier ?? ""] ?? 0) }
-        let result = try Self.pickWinner(candidates: candidates, rawProbs: rawProbs)
+        // `langProbs` values are LOG-probabilities (≤ 0; 0 means p=1), not
+        // linear probabilities — a real device log caught this the hard
+        // way: summing them directly (e.g. -0.07 + 0.0) produced a
+        // negative "total," which fell through to an arbitrary 50/50
+        // tie-break on *every* call, meaning auto-detect was never really
+        // detecting anything. A missing candidate (not in WhisperKit's
+        // dictionary at all) is treated as effectively impossible
+        // (-infinity), not as probability 0 in linear space, which in log
+        // space would wrongly mean certainty.
+        let rawLogProbs = candidates.map { language -> Double in
+            guard let value = langProbs[language.languageCode?.identifier ?? ""] else { return -Double.infinity }
+            return Double(value)
+        }
+        let result = try Self.pickWinner(candidates: candidates, rawLogProbs: rawLogProbs)
         AppLog.info(.languageID, "identify: picked \(result.language.minimalIdentifier) confidence=\(result.confidence) (took \(Date().timeIntervalSince(start))s)")
         return result
     }
 
-    /// Pure and independently unit-testable: renormalizes `rawProbs`
-    /// (WhisperKit's raw per-candidate probabilities, which sum to well
-    /// under 1 since they're a slice of its full ~100-language
-    /// distribution) across just the candidates the user actually chose,
+    /// Pure and independently unit-testable: converts `rawLogProbs`
+    /// (natural-log probabilities, WhisperKit's native output) to linear
+    /// probabilities via a softmax restricted to just the two candidates
+    /// the user chose — not WhisperKit's full ~100-language distribution —
     /// and picks the winner. Split out from `identify` so the confidence
     /// math can be verified against fixtures without a device or a loaded
     /// model.
-    nonisolated static func pickWinner(candidates: [Locale.Language], rawProbs: [Double]) throws -> LanguageIdentificationResult {
-        precondition(candidates.count == rawProbs.count)
-        let total = rawProbs.reduce(0, +)
-        let renormalized = total > 0 ? rawProbs.map { $0 / total } : candidates.map { _ in 1.0 / Double(candidates.count) }
+    nonisolated static func pickWinner(candidates: [Locale.Language], rawLogProbs: [Double]) throws -> LanguageIdentificationResult {
+        precondition(candidates.count == rawLogProbs.count)
+
+        guard let maxLogProb = rawLogProbs.max(), maxLogProb.isFinite else {
+            // No signal for any candidate at all (e.g. silence, or none
+            // of them appeared in WhisperKit's output).
+            return LanguageIdentificationResult(language: candidates[0], confidence: 1.0 / Double(candidates.count))
+        }
+
+        // Softmax, subtracting the max first for numerical stability —
+        // standard trick, avoids overflow and keeps the best candidate's
+        // term at exp(0) = 1 before normalizing.
+        let expValues = rawLogProbs.map { exp($0 - maxLogProb) }
+        let total = expValues.reduce(0, +)
+        let renormalized = total > 0 ? expValues.map { $0 / total } : candidates.map { _ in 1.0 / Double(candidates.count) }
 
         guard let bestIndex = renormalized.indices.max(by: { renormalized[$0] < renormalized[$1] }) else {
             throw LanguageIdentifierError.noResult

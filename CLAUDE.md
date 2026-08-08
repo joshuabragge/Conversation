@@ -85,6 +85,17 @@ verify those manually on a real device with headphones, not the simulator.
   with a cryptic OSStatus error, not a missing-voice problem. Fixed in
   `ConversationLoopController.process`: `mic.stopEngine()` before
   `activateSpeaking()`, `mic.restartEngine()` after `activateListening()`.
+- **WhisperKit's `detectLangauge` returns log-probabilities, not linear
+  probabilities.** A real device log caught the original renormalization
+  math treating them as linear (summing directly, `total > 0` as the "do
+  we have signal" check) — since log-probs are ≤ 0, that guard was false
+  on effectively every real call, silently falling back to an arbitrary
+  50/50 tie-break every single time. This meant auto-detect was never
+  really detecting anything since M5, not stalling. Fixed via softmax
+  (exponentiate, subtract max first for stability, normalize) in
+  `LanguageIdentifier.pickWinner`. A missing candidate in WhisperKit's
+  dictionary must map to `-Double.infinity` (effectively impossible), not
+  `0` — `0` in log-space means *certainty*, the opposite of "absent."
 - Any error caught during a turn must go through `showErrorThenResumeListening`
   (or an equivalent visible delay), never a bare `state = .error(...)`
   immediately followed by `state = .listening` — two synchronous
