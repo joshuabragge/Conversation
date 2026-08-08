@@ -31,11 +31,19 @@ final class LanguageIdentifier: ObservableObject {
 
     private var whisperKit: WhisperKit?
 
-    /// Loads the tiny model once, lazily, on first use. Downloads from
-    /// Hugging Face the first time (needs network, like the Translation
-    /// framework's one-time language-pack download) and is cached
-    /// on-device after — consistent with the app's "offline after initial
-    /// setup" promise.
+    /// Loads the tiny model once. Downloads from Hugging Face the first
+    /// time (needs network, like the Translation framework's one-time
+    /// language-pack download) and is cached on-device after — consistent
+    /// with the app's "offline after initial setup" promise.
+    ///
+    /// Called eagerly during onboarding's asset-check step (`prewarm()`)
+    /// rather than left purely lazy: leaving it to the first real
+    /// conversation turn meant a slow/stuck first-time download showed up
+    /// as "Identifying language…" hanging mid-conversation with no
+    /// progress indicator, instead of a clearly-labeled one-time setup
+    /// step. `identify(fileURL:candidates:)` still calls this too, as a
+    /// fallback for whenever onboarding's prewarm didn't happen or didn't
+    /// finish (e.g. the user backgrounded the app during it).
     private func loadedWhisperKit() async throws -> WhisperKit {
         if let whisperKit { return whisperKit }
         isLoadingModel = true
@@ -43,6 +51,13 @@ final class LanguageIdentifier: ObservableObject {
         let kit = try await WhisperKit(WhisperKitConfig(model: "tiny", verbose: false, logLevel: .none))
         whisperKit = kit
         return kit
+    }
+
+    /// Triggers the model download/load ahead of time, so onboarding can
+    /// show a real "downloading" state instead of the first conversation
+    /// turn silently stalling on it.
+    func prewarm() async throws {
+        _ = try await loadedWhisperKit()
     }
 
     /// Returns which of `candidates` WhisperKit's tiny model thinks was

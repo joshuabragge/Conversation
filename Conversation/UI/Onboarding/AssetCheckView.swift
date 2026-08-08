@@ -7,11 +7,16 @@ struct AssetCheckView: View {
 
     @EnvironmentObject private var translationService: TranslationService
     @StateObject private var speechOutput = SpeechOutputService()
+    @StateObject private var languageIdentifier = LanguageIdentifier()
 
     @State private var packStatus: LanguagePackStatus?
     @State private var packError: String?
     @State private var missingVoices: [Locale.Language] = []
-    @State private var isPreparing = false
+    @State private var isPreparingPack = false
+    @State private var modelReady = false
+    @State private var modelError: String?
+
+    private var isPreparing: Bool { isPreparingPack || languageIdentifier.isLoadingModel }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -27,6 +32,30 @@ struct AssetCheckView: View {
                 Text(packError)
                     .font(.footnote)
                     .foregroundStyle(.red)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Language-detection model")
+                    Spacer()
+                    if modelReady {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    } else if modelError != nil {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+                    } else {
+                        ProgressView()
+                    }
+                }
+                if languageIdentifier.isLoadingModel {
+                    Text("Downloading — one-time, needs network, then works offline.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let modelError {
+                    Text(modelError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
             }
 
             if !missingVoices.isEmpty {
@@ -45,7 +74,7 @@ struct AssetCheckView: View {
             Button {
                 onContinue()
             } label: {
-                Text(packStatus == .installed ? "Continue" : "Continue Anyway")
+                Text(packStatus == .installed && modelReady ? "Continue" : "Continue Anyway")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }
@@ -56,7 +85,11 @@ struct AssetCheckView: View {
         .padding(.horizontal, 32)
         .task {
             missingVoices = pair.languages.filter { !speechOutput.hasVoice(for: $0) }
-            await prepareTranslationPack()
+            // Run both prep steps concurrently — independent systems
+            // (Translation vs. WhisperKit), no reason to serialize them.
+            async let translationPrep: Void = prepareTranslationPack()
+            async let modelPrep: Void = prepareLanguageModel()
+            _ = await (translationPrep, modelPrep)
         }
     }
 
@@ -91,8 +124,8 @@ struct AssetCheckView: View {
         // by actually performing a real (trivial) translation — the
         // TranslationSessionHost mounted at the app root needs real screen
         // geometry for that system sheet to present (see the M2 finding).
-        isPreparing = true
-        defer { isPreparing = false }
+        isPreparingPack = true
+        defer { isPreparingPack = false }
         do {
             _ = try await withTimeout(seconds: 60) {
                 try await translationService.translate("hello", from: pair.first, to: pair.second)
@@ -100,6 +133,19 @@ struct AssetCheckView: View {
             packStatus = .installed
         } catch {
             packError = "Couldn't prepare the language pack yet: \(error.localizedDescription). You can continue and it'll retry during your first conversation."
+        }
+    }
+
+    private func prepareLanguageModel() async {
+        do {
+            try await withTimeout(seconds: 90) {
+                try await languageIdentifier.prewarm()
+            }
+            modelReady = true
+        } catch is TimeoutError {
+            modelError = "Taking a while — check your network connection. You can continue; it'll keep trying during your first conversation."
+        } catch {
+            modelError = "Couldn't download yet: \(error.localizedDescription). You can continue; it'll retry during your first conversation."
         }
     }
 }

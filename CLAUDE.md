@@ -74,6 +74,23 @@ verify those manually on a real device with headphones, not the simulator.
   not `AudioServicesPlaySystemSound` — the latter is silenced by the
   physical ring/silent switch; audio routed through the app's session
   (same mechanism as TTS) isn't.
+- **`MicrophoneInputManager`'s engine must be fully stopped before
+  `AudioSessionManager` switches category, and restarted after switching
+  back.** M7's hands-free rewrite left the engine running continuously
+  (so VAD never stops listening) but kept the M4 category-switch-per-turn
+  logic, which assumed the engine was always torn down between turns. The
+  mismatch produced a real on-device `OSStatus '561017449' ('!pri',
+  AVAudioSessionErrorInsufficientPriority)` failure when switching to the
+  Speaking config while the input node was still live — silent/broken TTS
+  with a cryptic OSStatus error, not a missing-voice problem. Fixed in
+  `ConversationLoopController.process`: `mic.stopEngine()` before
+  `activateSpeaking()`, `mic.restartEngine()` after `activateListening()`.
+- Any error caught during a turn must go through `showErrorThenResumeListening`
+  (or an equivalent visible delay), never a bare `state = .error(...)`
+  immediately followed by `state = .listening` — two synchronous
+  `@Published` writes with no suspension between them are indistinguishable
+  from silent failure to the UI. This exact pattern is why a real
+  `'!pri'` error was invisible until the delay was added.
 
 ## Repo notes
 

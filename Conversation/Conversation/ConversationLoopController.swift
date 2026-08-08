@@ -162,7 +162,13 @@ final class ConversationLoopController: ObservableObject {
     /// That's very likely why "no audio, no error shown" was happening.
     private func showErrorThenResumeListening(_ message: String) async {
         state = .error(message)
+        // A failure could have happened after `mic.stopEngine()` (see the
+        // Speaking-phase comment in `process`) but before it was restarted
+        // — restart unconditionally so `.listening` never lies about
+        // whether the mic is actually capturing. `restartEngine()` is a
+        // no-op if the engine was never stopped.
         try? audioSession.activateListening()
+        try? mic.restartEngine()
         try? await Task.sleep(nanoseconds: 2_500_000_000)
         guard case .error = state else { return } // don't clobber a newer state
         state = .listening
@@ -223,11 +229,19 @@ final class ConversationLoopController: ObservableObject {
             ))
 
             state = .speaking
+            // Must fully release the input route before switching category
+            // away from `.playAndRecord` — leaving the engine running here
+            // produced a real on-device `OSStatus '!pri'`
+            // (AVAudioSessionErrorInsufficientPriority) failure (see
+            // MicrophoneInputManager's doc comment).
+            mic.stopEngine()
             try audioSession.activateSpeaking()
             try await speechOutput.speak(translated, language: targetLanguage)
             AudioCueService.playBackToListening()
 
             try audioSession.activateListening()
+            vad.reset()
+            try mic.restartEngine()
             state = .listening
         } catch is TimeoutError {
             await showErrorThenResumeListening("Timed out — check your network connection for first-time setup, then try again.")
