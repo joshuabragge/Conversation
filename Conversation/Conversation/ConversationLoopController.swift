@@ -322,13 +322,20 @@ final class ConversationLoopController: ObservableObject {
             mic.stopEngine()
             try audioSession.activateSpeaking()
             try await speechOutput.speak(translated, language: targetLanguage)
-            AudioCueService.playBackToListening()
 
             try audioSession.activateListening()
             vad.reset()
             armVADGracePeriod()
             AppLog.debug(.conversation, "process: restarting mic engine after Speaking phase")
             try mic.restartEngine()
+            // Play the "back to listening" cue only once the mic is
+            // actually capturing again — it used to fire right after TTS
+            // finished, while still in the Speaking config with the
+            // engine stopped, which misrepresented when you could
+            // actually start talking. The 0.4s VAD grace period already
+            // in place absorbs this short tone the same way it absorbs
+            // other post-restart artifacts, so this is a safe reordering.
+            AudioCueService.playBackToListening()
             state = .listening
         } catch is TimeoutError {
             await showErrorThenResumeListening("Timed out — check your network connection for first-time setup, then try again.")
