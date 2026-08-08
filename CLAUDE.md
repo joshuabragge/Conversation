@@ -114,6 +114,23 @@ verify those manually on a real device with headphones, not the simulator.
   engine (re)start via `armVADGracePeriod()` — call it anywhere the engine
   starts or restarts, or this class of false-positive comes back.
 
+- **VAD-gated recording drops the onset of speech without a pre-roll
+  buffer.** By the time `VADSegmenter` confirms speech is happening
+  (`minSpeechDuration` debounce, plus the grace period above), the actual
+  onset already occurred — "first few words dropping when speaking
+  quickly" was users hitting exactly this, a textbook VAD pitfall.
+  `MicrophoneInputManager` now keeps a ~1s rolling `preRollBuffers` ring,
+  filled unconditionally on every tap callback regardless of VAD/grace
+  state, and `beginUtteranceFile()` writes it out before switching to live
+  writes. This needed its own lock (`preRollLock`), unlike the
+  `audioFile`/`utteranceFileURL` benign-race trade-off described above —
+  it's a Swift `Array` mutated on the audio thread while read from the
+  main actor, and concurrent unsynchronized array mutation is a real
+  memory-corruption risk, not just a stale-value one. Also: buffers handed
+  to an `AVAudioNodeTapBlock` are only valid for that call's duration —
+  anything retained past it (like this buffer) must be deep-copied first
+  (`MicrophoneInputManager.copyBuffer`).
+
 ## Logging
 
 `AppLog` (Logging/AppLog.swift) mirrors every log line to both `os.Logger`
