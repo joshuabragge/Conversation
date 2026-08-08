@@ -13,6 +13,11 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("com.joshuabragge.Conversation.vadSensitivity") private var vadSensitivityRaw = VADSensitivityPreset.medium.rawValue
     @State private var audioCuesEnabled = AudioCueService.isEnabled
+    // Same UserDefaults keys as RecognitionConfig's computed properties —
+    // @AppStorage gives a live two-way binding for free; RecognitionConfig
+    // is what the rest of the app actually reads at call time.
+    @AppStorage("com.joshuabragge.Conversation.languageIDRejectThreshold") private var languageIDRejectThreshold = 0.6
+    @AppStorage("com.joshuabragge.Conversation.whisperModel") private var whisperModelRaw = WhisperModelOption.tiny.rawValue
 
     init(pair: LanguagePair, controller: ConversationLoopController) {
         self.pair = pair
@@ -57,6 +62,25 @@ struct SettingsView: View {
 
                 Section("Sound") {
                     Toggle("Earcons (processing / done / didn't catch that)", isOn: $audioCuesEnabled)
+                }
+
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Language-detection sensitivity: \(Int(languageIDRejectThreshold * 100))%")
+                        Slider(value: $languageIDRejectThreshold, in: 0.5...0.9, step: 0.05)
+                        Text("Lower means fewer \"didn't catch that\" rejections, but a higher chance of guessing the wrong language.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Picker("Language-ID model", selection: $whisperModelRaw) {
+                        ForEach(WhisperModelOption.allCases) { option in
+                            Text(option.displayName).tag(option.rawValue)
+                        }
+                    }
+                } header: {
+                    Text("Advanced (Experimental)")
+                } footer: {
+                    Text("These affect how reliably Conversation tells your two languages apart. A bigger model is likely more accurate but slower and bigger to download — worth A/B testing. Model changes take effect the next time the app loads it (e.g. next launch), not immediately.")
                 }
 
                 Section("Debugging") {

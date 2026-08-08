@@ -17,6 +17,7 @@ final class LanguageIdentifierTests: XCTestCase {
         XCTAssertEqual(result.language, en)
         XCTAssertTrue(result.isConfident)
         XCTAssertGreaterThan(result.confidence, 0.9)
+        XCTAssertFalse(result.needsCrossCheck, "strong absolute confidence shouldn't need a cross-check")
     }
 
     func testAmbiguousResultIsNotConfident() throws {
@@ -46,13 +47,25 @@ final class LanguageIdentifierTests: XCTestCase {
         XCTAssertTrue(result.isConfident)
     }
 
-    func testRealDeviceLogValuesNowProduceAConfidentResult() throws {
-        // The actual values from the device log that exposed this bug:
-        // en=-0.06836422, de missing entirely. Previously produced
-        // confidence=0.5 (rejected) via the broken linear-sum fallback;
-        // should now correctly recognize this as a confident English call.
-        let result = try LanguageIdentifier.pickWinner(candidates: [en, de], rawLogProbs: [-0.06836422, -Double.infinity])
+    func testRealDeviceLogValuesNowProduceAConfidentResultButStillNeedCrossCheck() throws {
+        // The actual values from the device logs that exposed both bugs:
+        // WhisperKit said "en" (relative confidence 1.0, since "de" was
+        // entirely missing from its output) for audio that was actually
+        // spoken German ("heute die sonnenschein"). The relative-confidence
+        // fix correctly makes this read as a confident pick (no longer the
+        // broken 0.5 coin-flip) -- but the *absolute* log-prob (-0.78) is
+        // mediocre (~46% linear), which is exactly what needsCrossCheck
+        // exists to catch: trust the relative confidence for gating
+        // whether to guess at all, but don't skip a second opinion just
+        // because the other candidate happened to be absent.
+        let result = try LanguageIdentifier.pickWinner(candidates: [en, de], rawLogProbs: [-0.7775666, -Double.infinity])
         XCTAssertEqual(result.language, en)
-        XCTAssertTrue(result.isConfident)
+        XCTAssertTrue(result.isConfident, "relative confidence should still read as confident")
+        XCTAssertTrue(result.needsCrossCheck, "but absolute confidence is mediocre and should trigger a cross-check")
+    }
+
+    func testHighAbsoluteConfidenceSkipsCrossCheck() throws {
+        let result = try LanguageIdentifier.pickWinner(candidates: [en, de], rawLogProbs: [-0.1, -Double.infinity])
+        XCTAssertFalse(result.needsCrossCheck)
     }
 }

@@ -10,12 +10,25 @@ struct LanguageIdentificationResult {
     /// Renormalized across just the two candidates (not WhisperKit's full
     /// ~100-language distribution) — see `RecognitionConfig.languageIDRejectThreshold`.
     let confidence: Double
+    /// WhisperKit's own **absolute** log-probability for the winning
+    /// candidate (≤ 0; 0 means certainty) — unlike `confidence`, this
+    /// isn't relative to the other candidate, so it can catch cases where
+    /// `confidence` reads as high only because the other candidate never
+    /// appeared in WhisperKit's output at all. See `needsCrossCheck`.
+    let rawLogProb: Double
     var isConfident: Bool { confidence >= RecognitionConfig.languageIDRejectThreshold }
+    /// True when the model's own absolute confidence in its top pick is
+    /// mediocre even though `confidence` (relative to the other candidate)
+    /// might read as high — the caller should treat this pick as a
+    /// starting guess to verify, not a settled answer. See
+    /// `RecognitionConfig.languageIDHighConfidenceLogProb`'s doc comment
+    /// for the real device example that motivated this.
+    var needsCrossCheck: Bool { rawLogProb < RecognitionConfig.languageIDHighConfidenceLogProb }
 }
 
 /// Identifies which of two known candidate languages a recorded utterance
-/// was spoken in, using WhisperKit's tiny multilingual model for a single
-/// cheap language-ID pass — not for transcription (`SpeechRecognizerWrapper`
+/// was spoken in, using WhisperKit's multilingual model for a single cheap
+/// language-ID pass — not for transcription (`SpeechRecognizerWrapper`
 /// does that, on-device via Apple's own `Speech` framework, once the
 /// language is known).
 ///
@@ -23,18 +36,26 @@ struct LanguageIdentificationResult {
 /// limit (see M4/plan notes): no guessing a locale and retrying the other
 /// one on the same buffer, no confidence-blending heuristic against a
 /// second live recognizer — one WhisperKit pass gives a definitive answer
-/// up front.
+/// up front. That answer isn't always right, though — see
+/// `LanguageIdentificationResult.needsCrossCheck` and
+/// `ConversationLoopController.crossCheckLanguage` for how a weak one gets
+/// double-checked against Apple's own STT instead of trusted blindly.
 @MainActor
 final class LanguageIdentifier: ObservableObject {
     @Published private(set) var isLoadingModel = false
     @Published private(set) var errorMessage: String?
 
     private var whisperKit: WhisperKit?
+    /// Which model `whisperKit` was actually loaded with — if
+    /// `RecognitionConfig.whisperModel` changes after that, the change
+    /// won't take effect until a fresh `LanguageIdentifier` loads (see
+    /// `RecognitionConfig.whisperModel`'s doc comment).
+    private var loadedModelName: String?
 
-    /// Loads the tiny model once. Downloads from Hugging Face the first
-    /// time (needs network, like the Translation framework's one-time
-    /// language-pack download) and is cached on-device after — consistent
-    /// with the app's "offline after initial setup" promise.
+    /// Loads the configured model once. Downloads from Hugging Face the
+    /// first time (needs network, like the Translation framework's
+    /// one-time language-pack download) and is cached on-device after —
+    /// consistent with the app's "offline after initial setup" promise.
     ///
     /// Called eagerly during onboarding's asset-check step (`prewarm()`)
     /// rather than left purely lazy: leaving it to the first real
@@ -45,17 +66,19 @@ final class LanguageIdentifier: ObservableObject {
     /// fallback for whenever onboarding's prewarm didn't happen or didn't
     /// finish (e.g. the user backgrounded the app during it).
     private func loadedWhisperKit() async throws -> WhisperKit {
-        if let whisperKit {
-            AppLog.debug(.languageID, "loadedWhisperKit: already loaded, reusing")
+        let modelName = RecognitionConfig.whisperModel.modelName
+        if let whisperKit, loadedModelName == modelName {
+            AppLog.debug(.languageID, "loadedWhisperKit: already loaded (\(modelName)), reusing")
             return whisperKit
         }
         isLoadingModel = true
         defer { isLoadingModel = false }
-        AppLog.info(.languageID, "loadedWhisperKit: loading tiny model (downloads on first run)")
+        AppLog.info(.languageID, "loadedWhisperKit: loading '\(modelName)' model (downloads on first run)")
         let start = Date()
         do {
-            let kit = try await WhisperKit(WhisperKitConfig(model: "tiny", verbose: false, logLevel: .none))
+            let kit = try await WhisperKit(WhisperKitConfig(model: modelName, verbose: false, logLevel: .none))
             whisperKit = kit
+            loadedModelName = modelName
             AppLog.info(.languageID, "loadedWhisperKit: ready in \(Date().timeIntervalSince(start))s")
             return kit
         } catch {
@@ -81,11 +104,12 @@ final class LanguageIdentifier: ObservableObject {
         AppLog.info(.languageID, "prewarm: warm-up inference took \(Date().timeIntervalSince(start))s")
     }
 
-    /// Returns which of `candidates` WhisperKit's tiny model thinks was
-    /// spoken in the clip at `fileURL`, with a confidence renormalized
-    /// across just those two candidates — not WhisperKit's full
-    /// ~100-language distribution, since we only ever care about a binary
-    /// choice here.
+    /// Returns which of `candidates` WhisperKit's model thinks was spoken
+    /// in the clip at `fileURL`, with a confidence renormalized across
+    /// just those two candidates — not WhisperKit's full ~100-language
+    /// distribution, since we only ever care about a binary choice here —
+    /// plus the model's raw absolute confidence in that pick (see
+    /// `LanguageIdentificationResult.needsCrossCheck`).
     ///
     /// Uses WhisperKit's top-level `detectLangauge(audioArray:)` (yes, that
     /// misspelling is the real public API name) rather than the
@@ -121,7 +145,7 @@ final class LanguageIdentifier: ObservableObject {
             return Double(value)
         }
         let result = try Self.pickWinner(candidates: candidates, rawLogProbs: rawLogProbs)
-        AppLog.info(.languageID, "identify: picked \(result.language.minimalIdentifier) confidence=\(result.confidence) (took \(Date().timeIntervalSince(start))s)")
+        AppLog.info(.languageID, "identify: picked \(result.language.minimalIdentifier) confidence=\(result.confidence) rawLogProb=\(result.rawLogProb) needsCrossCheck=\(result.needsCrossCheck) (took \(Date().timeIntervalSince(start))s)")
         return result
     }
 
@@ -138,7 +162,7 @@ final class LanguageIdentifier: ObservableObject {
         guard let maxLogProb = rawLogProbs.max(), maxLogProb.isFinite else {
             // No signal for any candidate at all (e.g. silence, or none
             // of them appeared in WhisperKit's output).
-            return LanguageIdentificationResult(language: candidates[0], confidence: 1.0 / Double(candidates.count))
+            return LanguageIdentificationResult(language: candidates[0], confidence: 1.0 / Double(candidates.count), rawLogProb: -Double.infinity)
         }
 
         // Softmax, subtracting the max first for numerical stability —
@@ -151,6 +175,6 @@ final class LanguageIdentifier: ObservableObject {
         guard let bestIndex = renormalized.indices.max(by: { renormalized[$0] < renormalized[$1] }) else {
             throw LanguageIdentifierError.noResult
         }
-        return LanguageIdentificationResult(language: candidates[bestIndex], confidence: renormalized[bestIndex])
+        return LanguageIdentificationResult(language: candidates[bestIndex], confidence: renormalized[bestIndex], rawLogProb: rawLogProbs[bestIndex])
     }
 }

@@ -131,6 +131,24 @@ verify those manually on a real device with headphones, not the simulator.
   anything retained past it (like this buffer) must be deep-copied first
   (`MicrophoneInputManager.copyBuffer`).
 
+- **WhisperKit's tiny model can be confidently wrong, not just uncertain**
+  — it has a documented English bias on short/ambiguous phrases. A real
+  device log: German audio ("heute die sonnenschein") got tagged "en" at
+  relative confidence 1.0 (since "de" never appeared in WhisperKit's
+  output to compete against it) but absolute log-prob only -0.78 (~46%
+  linear) — genuinely weak, just uncontested. `LanguageIdentificationResult.needsCrossCheck`
+  gates on the *absolute* log-prob (`RecognitionConfig.languageIDHighConfidenceLogProb`,
+  -0.3), independent of the relative `confidence` score, specifically to
+  catch this. When it fires, `ConversationLoopController.crossCheckLanguage`
+  transcribes the same file with Apple's STT in *both* candidate locales
+  (sequentially — `SFSpeechRecognizer` still only allows one active task)
+  and uses `NLLanguageRecognizer` to judge which transcript actually reads
+  as plausible text in its own attempted language. This is a heuristic
+  second opinion, not a solved problem — `RecognitionConfig.languageIDRejectThreshold`
+  and `.whisperModel` are both exposed live in Settings specifically
+  because real tuning needs real iteration, not fixed constants guessed
+  once.
+
 ## Logging
 
 `AppLog` (Logging/AppLog.swift) mirrors every log line to both `os.Logger`

@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 
 /// The central hands-free conversation state machine (see `TurnState`),
 /// tying together every module built in M1–M6:
@@ -51,6 +52,12 @@ final class ConversationLoopController: ObservableObject {
     /// cycle and could eat the first syllable of what the user meant to say.
     private var vadGraceUntil: Date = .distantPast
     private let vadGracePeriod: TimeInterval = 0.4
+    /// Consecutive rejected/uncertain turns — after
+    /// `RecognitionConfig.consecutiveRejectsBeforeHint`, the rejection
+    /// message starts pointing at the manual language chip instead of
+    /// just saying "try again," since heavy tiny-model tuning means
+    /// repeated misses are expected, not exceptional.
+    private var consecutiveRejects = 0
 
     init(audioSession: AudioSessionManager, languagePair: LanguagePair) {
         self.audioSession = audioSession
@@ -183,9 +190,14 @@ final class ConversationLoopController: ObservableObject {
     /// final value from the UI's perspective, and "didn't catch that"
     /// deserves an actual beat over hands-free/eyes-free use.
     private func showRejectedThenResumeListening() async {
-        state = .rejected
+        consecutiveRejects += 1
+        let message = consecutiveRejects >= RecognitionConfig.consecutiveRejectsBeforeHint
+            ? "Didn't catch that — try the manual language chip if this keeps happening."
+            : "Didn't catch that — try again."
+        AppLog.info(.conversation, "showRejectedThenResumeListening: consecutiveRejects=\(consecutiveRejects)")
+        state = .rejected(message)
         try? await Task.sleep(nanoseconds: 1_200_000_000)
-        guard state == .rejected else { return } // don't clobber a newer state
+        guard case .rejected = state else { return } // don't clobber a newer state
         state = .listening
     }
 
@@ -226,9 +238,18 @@ final class ConversationLoopController: ObservableObject {
 
         do {
             let spokenLanguage: Locale.Language
+            let text: String
+
             if let manualOverride {
                 AppLog.info(.conversation, "process: using manual override \(manualOverride.minimalIdentifier)")
+                state = .transcribing
+                guard let t = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: manualOverride.minimalIdentifier)), !t.isEmpty else {
+                    AudioCueService.playRejected()
+                    await showRejectedThenResumeListening()
+                    return
+                }
                 spokenLanguage = manualOverride
+                text = t
             } else {
                 state = .identifying
                 // Previously unguarded: a stuck WhisperKit model
@@ -246,17 +267,38 @@ final class ConversationLoopController: ObservableObject {
                     await showRejectedThenResumeListening()
                     return
                 }
-                spokenLanguage = idResult.language
-            }
-            heardLanguage = spokenLanguage
 
-            state = .transcribing
-            let locale = Locale(identifier: spokenLanguage.minimalIdentifier)
-            guard let text = await recognizer.transcribe(fileURL: fileURL, locale: locale), !text.isEmpty else {
-                AudioCueService.playRejected()
-                await showRejectedThenResumeListening()
-                return
+                state = .transcribing
+                if idResult.needsCrossCheck {
+                    // WhisperKit's relative confidence reads as high, but
+                    // its absolute confidence in that pick is mediocre —
+                    // a real device log showed this exact combination
+                    // being confidently wrong (German misread as English).
+                    // Double-check against Apple's own STT in the other
+                    // candidate locale before committing.
+                    let alternate = languagePair.other(than: idResult.language)
+                    guard let crossChecked = await crossCheckLanguage(
+                        fileURL: fileURL, primary: idResult.language, alternate: alternate
+                    ) else {
+                        AudioCueService.playRejected()
+                        await showRejectedThenResumeListening()
+                        return
+                    }
+                    spokenLanguage = crossChecked.language
+                    text = crossChecked.text
+                } else {
+                    guard let t = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: idResult.language.minimalIdentifier)), !t.isEmpty else {
+                        AudioCueService.playRejected()
+                        await showRejectedThenResumeListening()
+                        return
+                    }
+                    spokenLanguage = idResult.language
+                    text = t
+                }
             }
+
+            consecutiveRejects = 0
+            heardLanguage = spokenLanguage
             heardText = text
 
             let targetLanguage = languagePair.other(than: spokenLanguage)
@@ -293,5 +335,58 @@ final class ConversationLoopController: ObservableObject {
         } catch {
             await showErrorThenResumeListening(error.localizedDescription)
         }
+    }
+
+    /// Double-checks a WhisperKit pick that had low absolute confidence
+    /// (`LanguageIdentificationResult.needsCrossCheck`) by transcribing
+    /// the *same* file with Apple's on-device STT in both candidate
+    /// locales — sequentially, not concurrently, since `SFSpeechRecognizer`
+    /// only supports one active task at a time regardless — then using
+    /// `NLLanguageRecognizer` to judge which transcript actually reads as
+    /// plausible text in the language it was transcribed as. A
+    /// forced-wrong-locale transcription tends to come out as recognizable
+    /// nonsense in its own attempted language (see the "Hota de Sun shine"
+    /// device log example), which this is meant to catch instead of
+    /// blindly trusting WhisperKit's audio-only guess.
+    ///
+    /// This is a heuristic, not a guarantee — `NLLanguageRecognizer` is
+    /// itself known to be less reliable on very short phrases. Treat this
+    /// as one more (differently-biased) opinion, not a solved problem.
+    private func crossCheckLanguage(
+        fileURL: URL, primary: Locale.Language, alternate: Locale.Language
+    ) async -> (language: Locale.Language, text: String)? {
+        AppLog.info(.conversation, "crossCheckLanguage: verifying \(primary.minimalIdentifier) against \(alternate.minimalIdentifier)")
+        let primaryText = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: primary.minimalIdentifier))
+        let alternateText = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: alternate.minimalIdentifier))
+        AppLog.info(.conversation, "crossCheckLanguage: \(primary.minimalIdentifier)=\"\(primaryText ?? "nil")\" \(alternate.minimalIdentifier)=\"\(alternateText ?? "nil")\"")
+
+        switch (primaryText, alternateText) {
+        case (nil, nil):
+            return nil
+        case (let p?, nil):
+            return (primary, p)
+        case (nil, let a?):
+            return (alternate, a)
+        case (let p?, let a?):
+            let candidates = [primary, alternate]
+            let primaryScore = Self.languagePlausibility(of: p, expected: primary, among: candidates)
+            let alternateScore = Self.languagePlausibility(of: a, expected: alternate, among: candidates)
+            AppLog.info(.conversation, "crossCheckLanguage: plausibility \(primary.minimalIdentifier)=\(primaryScore) \(alternate.minimalIdentifier)=\(alternateScore)")
+            return alternateScore > primaryScore ? (alternate, a) : (primary, p)
+        }
+    }
+
+    /// How much `text` reads like real `expected`-language text, per
+    /// `NLLanguageRecognizer` constrained to just `among` (not its full
+    /// language list, for the same reason `LanguageIdentifier` constrains
+    /// WhisperKit's output to just the two candidates the user picked).
+    nonisolated private static func languagePlausibility(
+        of text: String, expected: Locale.Language, among candidates: [Locale.Language]
+    ) -> Double {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.languageConstraints = candidates.map { NLLanguage($0.minimalIdentifier) }
+        recognizer.processString(text)
+        let hypotheses = recognizer.languageHypotheses(withMaximum: candidates.count)
+        return hypotheses[NLLanguage(expected.minimalIdentifier)] ?? 0
     }
 }

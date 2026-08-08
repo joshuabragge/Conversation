@@ -25,16 +25,69 @@ enum VADSensitivityPreset: String, CaseIterable, Identifiable {
     }
 }
 
-/// Centralized, tunable constants for the recognition pipeline — kept in
-/// one place because they're expected to change as M6 tunes them against
-/// real bilingual speech (not yet done: these are sensible starting
-/// defaults, not measured values).
+/// WhisperKit model options for language-ID, exposed in Settings as an
+/// experiment knob — accuracy/size/speed tradeoff is unverified without
+/// real-device A/B testing, which is the whole point of making it
+/// user-switchable rather than picking one blind.
+enum WhisperModelOption: String, CaseIterable, Identifiable {
+    case tiny
+    case base
+
+    var id: String { rawValue }
+    var modelName: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .tiny: return "Tiny (~75MB, fastest)"
+        case .base: return "Base (~150MB, likely more accurate)"
+        }
+    }
+}
+
+/// Centralized, tunable constants for the recognition pipeline. Several are
+/// UserDefaults-backed (not just `static let`) so Settings can expose them
+/// as live experiment knobs — real bilingual speech has shown the tiny
+/// WhisperKit model can be confidently wrong (not just uncertain) on short
+/// ambiguous phrases, especially with its documented English bias, and
+/// there's no substitute for letting real usage tune these rather than
+/// guessing fixed values once.
 enum RecognitionConfig {
+    private static let rejectThresholdKey = "com.joshuabragge.Conversation.languageIDRejectThreshold"
+    private static let modelKey = "com.joshuabragge.Conversation.whisperModel"
+
     /// Below this renormalized-across-the-two-candidates confidence, a
     /// language-ID result is treated as `rejected` rather than guessed.
     /// 0.5 is chance for a binary decision, so this needs real headroom
     /// above that to mean anything — 0.6 is a conservative starting point.
-    static let languageIDRejectThreshold: Double = 0.6
+    /// Exposed in Settings since the right value depends on the model and
+    /// real usage, not something to fix in code once.
+    static var languageIDRejectThreshold: Double {
+        get { UserDefaults.standard.object(forKey: rejectThresholdKey) as? Double ?? 0.6 }
+        set { UserDefaults.standard.set(newValue, forKey: rejectThresholdKey) }
+    }
+
+    /// Below this **absolute** (not renormalized) log-probability for
+    /// whichever candidate WhisperKit favors, its language-ID call is
+    /// treated as too weak to trust alone, and gets cross-checked against
+    /// the other candidate locale via Apple's own on-device STT (see
+    /// `ConversationLoopController.crossCheckLanguage`). This exists
+    /// because the *relative* confidence above can read as 1.0 simply
+    /// because the other candidate never appeared in WhisperKit's output
+    /// at all, even while the model is genuinely unsure of its own top
+    /// pick — a real device log showed WhisperKit confidently (by the
+    /// relative metric) saying "en" for spoken German, at raw log-probs
+    /// of -0.78 and -0.36 (46%/70% absolute linear confidence — mediocre,
+    /// not strong). -0.3 ≈ 74% linear probability.
+    static let languageIDHighConfidenceLogProb: Double = -0.3
+
+    /// Which WhisperKit model `LanguageIdentifier` loads. Changing this
+    /// only takes effect the next time a fresh `LanguageIdentifier`
+    /// instance loads its model (e.g. next app launch, or next full
+    /// onboarding pass) — it does not hot-swap an already-loaded model.
+    static var whisperModel: WhisperModelOption {
+        get { UserDefaults.standard.string(forKey: modelKey).flatMap(WhisperModelOption.init) ?? .tiny }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: modelKey) }
+    }
 
     /// How long `stop()`'s self-finalize fallback waits for the
     /// recognizer's own callback before finalizing from whatever's already
@@ -51,4 +104,10 @@ enum RecognitionConfig {
     /// a stalled download or model load left "Identifying language…"
     /// showing forever with nothing to catch it.
     static let languageIdentificationTimeout: TimeInterval = 45.0
+
+    /// After this many consecutive rejected/low-confidence turns, hint at
+    /// the manual language chip instead of continuing to guess silently —
+    /// heavy tiny-model tuning is expected to take real iteration, so the
+    /// fallback needs to be visible, not just theoretically available.
+    static let consecutiveRejectsBeforeHint = 2
 }

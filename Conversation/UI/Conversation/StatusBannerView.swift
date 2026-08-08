@@ -24,7 +24,7 @@ struct StatusBannerView: View {
     VStack(spacing: 12) {
         StatusBannerView(state: .listening)
         StatusBannerView(state: .identifying)
-        StatusBannerView(state: .rejected)
+        StatusBannerView(state: .rejected("Didn't catch that — try again."))
         StatusBannerView(state: .error("Couldn't start listening."))
     }
 }

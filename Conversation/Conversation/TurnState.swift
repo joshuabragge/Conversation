@@ -12,7 +12,10 @@ enum TurnState: Equatable {
     case transcribing
     case translating
     case speaking
-    case rejected
+    /// Carries a message so `ConversationLoopController` can hint at the
+    /// manual language chip after repeated rejections, instead of always
+    /// showing the same generic text (see `RecognitionConfig.consecutiveRejectsBeforeHint`).
+    case rejected(String)
     case error(String)
 
     /// Short, user-facing status text for the conversation screen.
@@ -25,7 +28,7 @@ enum TurnState: Equatable {
         case .transcribing: return "Transcribing…"
         case .translating: return "Translating…"
         case .speaking: return "Speaking…"
-        case .rejected: return "Didn't catch that — try again."
+        case .rejected(let message): return message
         case .error(let message): return message
         }
     }
