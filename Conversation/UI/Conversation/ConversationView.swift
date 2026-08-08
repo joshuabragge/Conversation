@@ -32,7 +32,12 @@ struct ConversationView: View {
                                 .frame(maxWidth: .infinity, alignment: .center)
                                 .padding(.top, 40)
                         }
-                        ForEach(controller.history) { turn in
+                        // Newest first, so the most recent exchange is
+                        // immediately visible without scrolling — the
+                        // whole point of a hands-free walking app is not
+                        // needing to dig through the screen to see what
+                        // was just said.
+                        ForEach(controller.history.reversed()) { turn in
                             TranscriptBubbleView(turn: turn)
                         }
                     }

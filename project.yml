@@ -36,6 +36,14 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # Lets the app keep listening/translating with the screen locked
+        # or backgrounded, as long as it holds an active AVAudioSession —
+        # the standard, App-Review-legitimate mechanism for continuous-
+        # recording apps (same one voice memo / VoIP / transcription apps
+        # use), not a workaround. Genuinely required for a walking app:
+        # without it, iOS suspends the mic the moment the screen locks.
+        UIBackgroundModes:
+          - audio
 
   ConversationTests:
     type: bundle.unit-test

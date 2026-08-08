@@ -183,6 +183,13 @@ before trusting them.
   point the user at Settings for any of these.
 - Real Bluetooth HFP↔A2DP switching latency/glitches between turns haven't
   been measured on hardware.
+- **Background/locked-screen operation** (`UIBackgroundModes: audio`) lets
+  iOS keep the app's `AVAudioSession` — and therefore the mic, WhisperKit,
+  Translation, and TTS — running with the screen locked, the same
+  legitimate mechanism voice-memo/VoIP/transcription apps use. Not yet
+  verified on-device for extended sessions: real-world behavior under
+  memory pressure, CoreML inference speed while backgrounded, and battery
+  drain over a long walk are all unconfirmed.
 
 ## Manual test checklist (do this before trusting M5–M8)
 
