@@ -149,6 +149,21 @@ verify those manually on a real device with headphones, not the simulator.
   because real tuning needs real iteration, not fixed constants guessed
   once.
 
+- **WhisperKit needed network on every launch, not just the first — confirmed
+  by reading its source, not guessed.** Its default model-resolution path
+  (used whenever `modelFolder` isn't explicitly passed) unconditionally
+  calls the Hugging Face Hub API to list filenames *before* ever checking
+  a local cache, even when the model is already fully downloaded. Fixed
+  in `LanguageIdentifier.loadedWhisperKit`: after a successful load, the
+  resolved `WhisperKit.modelFolder` is saved per model name in
+  `UserDefaults`; next load passes that path back in as `modelFolder`,
+  which makes WhisperKit skip `download()` (and its network call)
+  entirely. Falls back to normal resolution once if the cached folder is
+  missing or fails to load. If "works online, breaks offline" ever
+  resurfaces, suspect a similar "network call before cache check" pattern
+  in whatever framework is involved, not necessarily this exact code path
+  again.
+
 ## Logging
 
 `AppLog` (Logging/AppLog.swift) mirrors every log line to both `os.Logger`

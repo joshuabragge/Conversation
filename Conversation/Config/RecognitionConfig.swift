@@ -10,9 +10,9 @@ enum VADSensitivityPreset: String, CaseIterable, Identifiable {
     /// How long a pause has to last before a turn is considered finished.
     var trailingSilenceDuration: TimeInterval {
         switch self {
-        case .short: return 0.6
-        case .medium: return 0.9
-        case .long: return 1.3
+        case .short: return 1.5
+        case .medium: return 2.0
+        case .long: return 2.5
         }
     }
 
