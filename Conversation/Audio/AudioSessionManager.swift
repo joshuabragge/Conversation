@@ -1,4 +1,5 @@
 import AVFoundation
+import UIKit
 
 /// Owns the app's `AVAudioSession` and switches it between two configs that
 /// are never held simultaneously — this is the fix for the M3 bug where
@@ -47,7 +48,7 @@ final class AudioSessionManager: ObservableObject {
             try session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             state = .listening
-            AppLog.info(.audioSession, "activateListening: succeeded, route=\(self.routeDescription)")
+            AppLog.info(.audioSession, "activateListening: succeeded (backgrounded=\(UIApplication.shared.applicationState != .active)), route=\(self.routeDescription)")
         } catch {
             AppLog.error(.audioSession, "activateListening: threw \(error.localizedDescription)")
             throw error
@@ -56,12 +57,30 @@ final class AudioSessionManager: ObservableObject {
 
     /// Mic inactive — lets Bluetooth renegotiate up to A2DP for higher
     /// quality TTS output than the Listening config's HFP would allow.
+    ///
+    /// **Except while backgrounded/locked**: a real device report showed
+    /// earcons (which play during the Listening config, `.playAndRecord`)
+    /// audible with the screen locked, while TTS (which only plays after
+    /// this switch to `.playback`) was completely silent — isolating the
+    /// problem to specifically this category transition happening while
+    /// already backgrounded, not to background audio in general (mic
+    /// capture and `.playAndRecord` playback both kept working). Root
+    /// cause unconfirmed, but the fix is straightforward: don't make that
+    /// transition while backgrounded. Stay in a `.playAndRecord`-
+    /// compatible category instead, trading away the Bluetooth HFP→A2DP
+    /// quality optimization for actually being audible. Foreground
+    /// behavior (and the optimization) is unaffected.
     func activateSpeaking() throws {
+        let isBackgrounded = UIApplication.shared.applicationState != .active
         do {
-            try session.setCategory(.playback, mode: .spokenAudio, options: [])
+            if isBackgrounded {
+                try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.allowBluetooth, .defaultToSpeaker])
+            } else {
+                try session.setCategory(.playback, mode: .spokenAudio, options: [])
+            }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             state = .speaking
-            AppLog.info(.audioSession, "activateSpeaking: succeeded, route=\(self.routeDescription)")
+            AppLog.info(.audioSession, "activateSpeaking: succeeded (backgrounded=\(isBackgrounded)), route=\(self.routeDescription)")
         } catch {
             AppLog.error(.audioSession, "activateSpeaking: threw \(error.localizedDescription)")
             throw error

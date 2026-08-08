@@ -164,6 +164,22 @@ verify those manually on a real device with headphones, not the simulator.
   in whatever framework is involved, not necessarily this exact code path
   again.
 
+- **TTS was silent with the screen locked, even though mic capture and
+  earcons both worked.** Isolated via which audio worked and which didn't:
+  earcons (via `AVAudioPlayer`) play during the Listening config
+  (`.playAndRecord`) and were audible locked; TTS only plays after
+  switching to the Speaking config (`.playback`) and was not — pointing at
+  the `.playAndRecord` → `.playback` category transition specifically
+  while already backgrounded, not at background audio in general.
+  `AudioSessionManager.activateSpeaking()` now checks
+  `UIApplication.shared.applicationState` and stays in a
+  `.playAndRecord`-compatible category when backgrounded, skipping the
+  switch (and its Bluetooth HFP→A2DP quality optimization) rather than
+  risk the transition again. Foreground behavior unchanged. Root cause
+  still not fully confirmed — if background audio issues resurface, check
+  whether they cluster around session category *transitions* specifically
+  happening while backgrounded, same pattern as this one.
+
 ## Logging
 
 `AppLog` (Logging/AppLog.swift) mirrors every log line to both `os.Logger`
