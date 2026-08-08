@@ -41,6 +41,16 @@ final class ConversationLoopController: ObservableObject {
     private var translationService: TranslationService?
 
     private var wasRunningBeforeInterruption = false
+    /// VAD ignores buffers until this time — set whenever the mic engine
+    /// (re)starts, to swallow a transient pop/settling artifact from the
+    /// hardware re-engaging (and, without headphones, any residual TTS
+    /// echo) instead of letting it register as a false utterance start.
+    /// A real device log showed WhisperKit confidently "identifying" such
+    /// a false trigger while Apple's STT correctly found no actual speech
+    /// in it — the turn got rejected safely, but it still cost a wasted
+    /// cycle and could eat the first syllable of what the user meant to say.
+    private var vadGraceUntil: Date = .distantPast
+    private let vadGracePeriod: TimeInterval = 0.4
 
     init(audioSession: AudioSessionManager, languagePair: LanguagePair) {
         self.audioSession = audioSession
@@ -92,8 +102,10 @@ final class ConversationLoopController: ObservableObject {
         vad.reset()
         do {
             try audioSession.activateListening()
+            armVADGracePeriod()
             try mic.startEngine { [weak self] samples, duration in
-                self?.vad.process(samples: samples, duration: duration)
+                guard let self, Date() >= self.vadGraceUntil else { return }
+                self.vad.process(samples: samples, duration: duration)
             }
             state = .listening
         } catch {
@@ -107,6 +119,11 @@ final class ConversationLoopController: ObservableObject {
         mic.stopEngine()
         audioSession.deactivate()
         state = .idle
+    }
+
+    private func armVADGracePeriod() {
+        vadGraceUntil = Date().addingTimeInterval(vadGracePeriod)
+        AppLog.debug(.conversation, "armVADGracePeriod: ignoring VAD input until \(vadGracePeriod)s from now")
     }
 
     // MARK: - VAD-driven turn boundaries
@@ -186,6 +203,7 @@ final class ConversationLoopController: ObservableObject {
         // whether the mic is actually capturing. `restartEngine()` is a
         // no-op if the engine was never stopped.
         try? audioSession.activateListening()
+        armVADGracePeriod()
         try? mic.restartEngine()
         try? await Task.sleep(nanoseconds: 2_500_000_000)
         guard case .error = state else { return } // don't clobber a newer state
@@ -266,6 +284,7 @@ final class ConversationLoopController: ObservableObject {
 
             try audioSession.activateListening()
             vad.reset()
+            armVADGracePeriod()
             AppLog.debug(.conversation, "process: restarting mic engine after Speaking phase")
             try mic.restartEngine()
             state = .listening

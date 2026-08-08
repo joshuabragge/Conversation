@@ -103,6 +103,17 @@ verify those manually on a real device with headphones, not the simulator.
   from silent failure to the UI. This exact pattern is why a real
   `'!pri'` error was invisible until the delay was added.
 
+- **VAD needs a grace period after the mic engine (re)starts.** A device
+  log showed WhisperKit confidently "identifying" a language for a clip
+  that Apple's `SFSpeechRecognizer` then correctly found *no actual speech*
+  in — the turn got rejected safely, but it was a wasted cycle (and risks
+  eating the first syllable of what the user meant to say). Most likely
+  cause: a transient pop from the audio hardware re-engaging, or (without
+  headphones) residual TTS echo, right as listening resumes. `ConversationLoopController`
+  now ignores VAD input for `vadGracePeriod` (0.4s) after every mic
+  engine (re)start via `armVADGracePeriod()` — call it anywhere the engine
+  starts or restarts, or this class of false-positive comes back.
+
 ## Logging
 
 `AppLog` (Logging/AppLog.swift) mirrors every log line to both `os.Logger`
