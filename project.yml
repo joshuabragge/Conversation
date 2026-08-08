@@ -1,0 +1,62 @@
+name: Conversation
+options:
+  bundleIdPrefix: com.joshuabragge
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+
+packages:
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit
+    from: "0.9.0"
+
+targets:
+  Conversation:
+    type: application
+    platform: iOS
+    sources:
+      - path: Conversation
+    dependencies:
+      - package: WhisperKit
+        product: WhisperKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joshuabragge.Conversation
+        INFOPLIST_FILE: Conversation/Resources/Info.plist
+        SWIFT_VERSION: 5.0
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_STYLE: Automatic
+    info:
+      path: Conversation/Resources/Info.plist
+      properties:
+        NSMicrophoneUsageDescription: "Conversation listens through your headphones' mic to hear what you say and translate it."
+        NSSpeechRecognitionUsageDescription: "Conversation transcribes your speech on-device to translate it between your two chosen languages."
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+
+  ConversationTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ConversationTests
+    dependencies:
+      - target: Conversation
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joshuabragge.ConversationTests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Conversation:
+    build:
+      targets:
+        Conversation: all
+        ConversationTests: [test]
+    test:
+      targets:
+        - ConversationTests
+    run:
+      config: Debug
