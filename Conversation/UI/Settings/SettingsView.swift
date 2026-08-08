@@ -11,6 +11,14 @@ struct SettingsView: View {
     @ObservedObject private var speechOutput: SpeechOutputService
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    // Bumped whenever the app returns to foreground, so the voice pickers
+    // re-query AVSpeechSynthesisVoice.speechVoices() instead of showing
+    // whatever was installed when Settings first appeared — tapping
+    // "Manage voices in Settings" backgrounds this app while you actually
+    // download one, and nothing else would otherwise tell SwiftUI the
+    // system's voice list changed underneath it.
+    @State private var voiceListRefreshToken = UUID()
     @AppStorage("com.joshuabragge.Conversation.vadSensitivity") private var vadSensitivityRaw = VADSensitivityPreset.medium.rawValue
     @State private var audioCuesEnabled = AudioCueService.isEnabled
     // Same UserDefaults keys as RecognitionConfig's computed properties —
@@ -40,6 +48,7 @@ struct SettingsView: View {
                     ForEach(pair.languages, id: \.minimalIdentifier) { language in
                         VoicePickerView(language: language, speechOutput: speechOutput)
                     }
+                    .id(voiceListRefreshToken)
                     HStack {
                         Text("Speaking rate")
                         Slider(value: $speechOutput.rate,
@@ -102,6 +111,11 @@ struct SettingsView: View {
             }
             .onChange(of: audioCuesEnabled) { _, newValue in
                 AudioCueService.isEnabled = newValue
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    voiceListRefreshToken = UUID()
+                }
             }
         }
     }

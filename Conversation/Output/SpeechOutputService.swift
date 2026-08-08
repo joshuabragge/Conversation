@@ -40,10 +40,21 @@ final class SpeechOutputService: NSObject, ObservableObject {
     }
 
     /// All installed voices whose language matches `language`, for
-    /// Settings' voice picker.
+    /// Settings' voice picker — `AVSpeechSynthesisVoice.speechVoices()` is,
+    /// per Apple's own contract, exactly "voices installed by the OS or
+    /// downloaded by the user," so this is already what it sounds like it
+    /// should be. Sorted with the system's own default voice for this
+    /// language first (matching what you'd hear elsewhere on the device,
+    /// e.g. VoiceOver), rather than `speechVoices()`'s unspecified order.
     func availableVoices(for language: Locale.Language) -> [AVSpeechSynthesisVoice] {
         let code = language.minimalIdentifier
-        return AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix(code) }
+        let matches = AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix(code) }
+        let systemDefaultID = AVSpeechSynthesisVoice(language: code)?.identifier
+        return matches.sorted { a, b in
+            if a.identifier == systemDefaultID { return true }
+            if b.identifier == systemDefaultID { return false }
+            return a.name < b.name
+        }
     }
 
     private func voice(for language: Locale.Language) -> AVSpeechSynthesisVoice? {
@@ -83,6 +94,20 @@ final class SpeechOutputService: NSObject, ObservableObject {
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
+    }
+}
+
+extension AVSpeechSynthesisVoice {
+    /// For distinguishing same-named voices at different quality tiers in
+    /// the picker (e.g. a default "Anna" vs. an Enhanced "Anna" you
+    /// specifically downloaded) — otherwise indistinguishable in the UI.
+    var qualityLabel: String {
+        switch quality {
+        case .premium: return "Premium"
+        case .enhanced: return "Enhanced"
+        case .default: return "Standard"
+        @unknown default: return "Standard"
+        }
     }
 }
 

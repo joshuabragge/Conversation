@@ -19,7 +19,7 @@ struct VoicePickerView: View {
         } else {
             Picker(language.displayName, selection: binding) {
                 ForEach(voices, id: \.identifier) { voice in
-                    Text(voice.name).tag(voice.identifier)
+                    Text("\(voice.name) (\(voice.qualityLabel))").tag(voice.identifier)
                 }
             }
         }
