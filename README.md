@@ -10,7 +10,8 @@ headphone mic, and Google's needs network and handles headphone audio
 routing poorly. This app is narrower and more specific: pick two languages
 once, then just talk — in either language, in any order — and hear the
 translation spoken back through your headphones, with no button presses and
-no network once initial setup is done.
+no network once initial setup is done. It keeps listening and translating
+with the screen locked, so it stays out of your way on an actual walk.
 
 ## How it works
 
@@ -18,18 +19,25 @@ no network once initial setup is done.
    into turns automatically — no push-to-talk.
 2. **Identify the language.** A small on-device WhisperKit model decides
    which of your two chosen languages you just spoke, from the audio itself.
+   If it isn't confident, the same clip gets a second opinion — transcribed
+   in both candidate locales and compared for which one actually reads as
+   plausible text — before committing to an answer.
 3. **Transcribe.** Apple's on-device `Speech` framework transcribes that
    clip in the now-known-correct locale.
 4. **Translate.** Apple's `Translation` framework translates it to the
    other language.
 5. **Speak it back.** `AVSpeechSynthesizer` speaks the translation, with the
    audio session temporarily switched to a playback-optimized config so
-   Bluetooth headphones aren't stuck in low-quality call-audio mode for it.
-6. **Back to listening**, automatically.
+   Bluetooth headphones aren't stuck in low-quality call-audio mode for it
+   (foreground only — see the background note in Architecture).
+6. **Back to listening**, automatically, once the mic is actually capturing
+   again.
 
-A manual language chip lets you override a wrong auto-detect guess.
+A manual language chip lets you override a wrong auto-detect guess, and
+gets suggested automatically after a couple of consecutive misses.
 Everything after first-run setup (WhisperKit model download, Translation
-language-pack download) runs fully offline.
+language-pack download) runs fully offline — including relaunching the app
+in airplane mode.
 
 ## Requirements
 
@@ -54,9 +62,11 @@ xcodebuild -project Conversation.xcodeproj -scheme Conversation \
 ```
 
 First launch needs network twice, regardless of simulator/device: WhisperKit
-downloads its tiny language-ID model from Hugging Face on first use, and
+downloads its language-ID model from Hugging Face on first use, and
 Translation downloads the language pack for whichever pair you pick during
-onboarding. Both are cached on-device after that.
+onboarding. Both are cached on-device after that, and reused directly from
+disk on later launches without needing network again (see `CLAUDE.md` for
+why that second part needed an explicit fix).
 
 **Re-run `xcodegen generate` after adding, removing, or renaming any Swift
 file** — the project file is a build artifact of `project.yml` + whatever's
@@ -66,9 +76,12 @@ on disk at generation time, not a live index.
 
 The simulator can build and run the UI, but can't meaningfully exercise:
 mic input quality, on-device STT/WhisperKit accuracy, Bluetooth audio
-routing/quality, or the headphone-disconnect/interruption handling. Treat a
-successful simulator build as "compiles and the view graph type-checks," not
-as "works." Anything involving real audio needs a physical device.
+routing/quality, background/locked-screen behavior, or the
+headphone-disconnect/interruption handling. Treat a successful simulator
+build as "compiles and the view graph type-checks," not as "works."
+Anything involving real audio needs a physical device — all of the fixes
+described in this README and `CLAUDE.md` were found and verified that way,
+not in the simulator.
 
 ## Testing
 
@@ -78,24 +91,27 @@ xcodebuild -project Conversation.xcodeproj -scheme Conversation \
 ```
 
 Unit tests cover `VADSegmenter` (turn-segmentation hysteresis, against
-synthetic buffers) and `LanguageIdentifier`'s confidence-renormalization
-math (against fixture probabilities) — the two pieces of logic that don't
-need a device or a loaded model to verify. Everything else is manual,
-on-device testing.
+synthetic buffers) and `LanguageIdentifier`'s confidence math (softmax
+renormalization + absolute-confidence gating, against fixture
+probabilities, including the exact values from a real device log that
+exposed a bug — see `CLAUDE.md`) — the pieces of logic that don't need a
+device or a loaded model to verify. Everything else is manual, on-device
+testing.
 
 ## Architecture
 
 ```
 Conversation/
   App/            App entry, root navigation (Onboarding vs. Conversation), persisted language pair
-  Audio/          AVAudioSession state machine, mic capture, VAD, earcons
+  Audio/          AVAudioSession state machine, mic capture, VAD, pre-roll buffer, earcons
   Speech/         WhisperKit language-ID, on-device transcription
   Translation/    Apple Translation framework bridge, language-pack checks
   Output/         Text-to-speech
   Conversation/   The central turn state machine
   Models/         LanguagePair, on-device language-support detection
   Permissions/    Mic + speech-recognition auth
-  Config/         Tunable thresholds, timeout helper
+  Config/         Tunable thresholds (several live-editable from Settings), timeout helper
+  Logging/        AppLog + in-app Debug Log viewer
   UI/             Onboarding, Conversation, Settings screens
 ```
 
@@ -103,15 +119,19 @@ Conversation/
 
 - **`AudioSessionManager`** — owns two `AVAudioSession` configs, switched at
   turn boundaries: *Listening* (`.playAndRecord`, mic on) and *Speaking*
-  (`.playback`, mic off). This split exists specifically so Bluetooth
-  accessories can renegotiate up to A2DP for TTS output instead of staying
-  pinned to HFP (mono, low-bitrate) for the whole session — the likely
-  reason similar apps sound bad over AirPods.
-- **`MicrophoneInputManager`** — the continuous mic tap for hands-free
-  listening. Deliberately *not* main-actor-isolated: it runs on the
-  real-time audio thread and does cheap per-buffer work (VAD energy calc,
-  optional file write) inline rather than hopping actors dozens of times a
-  second. Only the rare start/end events cross over to the main actor.
+  (`.playback`, mic off, foreground only — see below). This split exists
+  specifically so Bluetooth accessories can renegotiate up to A2DP for TTS
+  output instead of staying pinned to HFP (mono, low-bitrate) for the whole
+  session — the likely reason similar apps sound bad over AirPods. Also
+  tracks headphone connect/disconnect and system interruptions (calls, etc.)
+  and pauses the loop for both.
+- **`MicrophoneInputManager`** — the mic tap for hands-free listening, plus
+  a ~1s rolling pre-roll buffer (always capturing, independent of VAD
+  state) so the actual onset of speech isn't lost to VAD's confirmation
+  debounce. Deliberately *not* main-actor-isolated: it runs on the
+  real-time audio thread and does cheap per-buffer work inline rather than
+  hopping actors dozens of times a second. Only the rare start/end events
+  cross over to the main actor.
 - **`VADSegmenter`** — streaming energy + hysteresis voice-activity
   detection with an adaptive noise floor, built on WhisperKit's
   `AudioProcessor` energy primitives (not reimplemented RMS math).
@@ -119,9 +139,11 @@ Conversation/
   this is the streaming/incremental equivalent for a live mic feed.
 - **`LanguageIdentifier`** — one WhisperKit `detectLangauge(audioArray:)`
   pass (note: that's the framework's actual, misspelled, public API name)
-  per turn, renormalized across just the two chosen languages rather than
-  WhisperKit's full ~100-language distribution, since a binary choice is
-  all that matters here.
+  per turn, renormalized across just the two chosen languages via softmax
+  over their raw log-probabilities — not WhisperKit's full ~100-language
+  distribution, since a binary choice is all that matters here. Also
+  caches its resolved model folder so later launches load straight from
+  disk instead of requiring network.
 - **`SpeechRecognizerWrapper`** — one-shot on-device transcription via
   `SFSpeechURLRecognitionRequest` once the language is known. Polls with a
   bounded timeout rather than trusting `SFSpeechRecognizer`'s own `isFinal`
@@ -132,7 +154,18 @@ Conversation/
   modifier, into an async API callable from anywhere. A hidden
   (`TranslationSessionHost`) view stays mounted at the app root for this.
 - **`ConversationLoopController`** — the actual turn state machine tying
-  everything above together; see `TurnState` for the full state list.
+  everything above together (see `TurnState` for the full state list),
+  including the cross-check fallback when WhisperKit's absolute confidence
+  in its own pick is mediocre (transcribes the same clip in both candidate
+  locales via Apple's STT and picks whichever reads as more plausible text
+  in its own language, via `NLLanguageRecognizer`).
+- **`AppLog`/`LogStore`** — every module logs its state transitions and
+  failures through this, mirrored to both Xcode's console and an in-app
+  viewer (Settings > Debug Log, or a link on the Welcome screen). This is
+  how essentially every fix in `CLAUDE.md` past the first few was actually
+  diagnosed — real device behavior that can't be reproduced in the
+  simulator needs a way to get evidence back from a device that isn't
+  tethered to Xcode.
 
 ### Why WhisperKit only for language-ID, not transcription
 
@@ -140,15 +173,38 @@ Conversation/
 at a time — confirmed via reproducible testing, not just suspected. That
 ruled out the original plan (guess a locale, retry the other one live if
 unconfident) as a reasonable design. Instead: one cheap WhisperKit pass
-answers "which of these two languages?" definitively, and Apple's own STT —
-generally more accurate for actual transcription than Whisper's tiny model —
-handles the transcription once the locale is known. This also keeps the
-dependency footprint narrow: only a small (~75–150MB) language-ID model is
-needed, not a full transcription-quality one.
+answers "which of these two languages?" definitively (or triggers a
+sequential cross-check against Apple's STT when it isn't sure), and Apple's
+own STT — generally more accurate for actual transcription than Whisper's
+tiny model — handles the transcription once the locale is known. This also
+keeps the dependency footprint narrow: only a small (~75–150MB) language-ID
+model is needed, not a full transcription-quality one.
+
+### Why background/locked-screen operation needed care, not just an Info.plist entry
+
+`UIBackgroundModes: audio` is the standard mechanism that lets an active
+`AVAudioSession` (and therefore the mic, WhisperKit, Translation, and TTS)
+keep running with the screen locked. But `AudioSessionManager`'s
+Listening→Speaking category switch (`.playAndRecord` → `.playback`) turned
+out to silence `AVSpeechSynthesizer` output specifically while already
+backgrounded, even though mic capture and earcons (a different playback
+path) both kept working fine locked. `activateSpeaking()` now stays in a
+`.playAndRecord`-compatible category when backgrounded instead of making
+that switch — trading away the Bluetooth quality optimization for actually
+being audible while locked. See `CLAUDE.md` for the full isolation story.
 
 ## Current status
 
-All of M0–M8 are built and compile clean with passing tests:
+M0 through M8 are built, and — past the point of just "compiles with
+passing unit tests" — have been through multiple rounds of real-device
+testing (iPhone, both with AirPods and without) that surfaced and fixed
+real bugs no amount of code review alone would have caught: a log-probability
+math error that made language auto-detection silently coin-flip since it
+was introduced, an `AVAudioSession` category-switch race that produced a
+cryptic OSStatus failure and silent TTS, a WhisperKit behavior that required
+network on every launch instead of just the first, VAD dropping the onset of
+fast speech, and more — see `CLAUDE.md`'s "non-obvious bugs" section for the
+full, still-growing list with root causes.
 
 - [x] M0 — Project scaffold
 - [x] M1 — On-device STT (manual trigger)
@@ -156,53 +212,84 @@ All of M0–M8 are built and compile clean with passing tests:
 - [x] M3 — TTS output
 - [x] M4 — Audio session Listening/Speaking state machine + earcons
 - [x] M5 — WhisperKit language identification
-- [x] M6 — Confidence-gated accept/reject
+- [x] M6 — Confidence-gated accept/reject, with a cross-check fallback
 - [x] M7 — Hands-free VAD-driven loop (no more push-to-talk)
 - [x] M8 — Real onboarding/conversation/settings UI
 - [ ] M9 — Hardening: device/firmware matrix, battery/thermal, accessibility, App Store prep
 
-M0–M4 have been confirmed working on a real device (iPhone + AirPods, and
-without headphones). M5–M8 compile and pass their unit tests but have not
-yet been exercised on a real device — see the manual test checklist below
-before trusting them.
+The core loop (listen → identify → transcribe → translate → speak → back to
+listening) has been confirmed working end-to-end on a real device, with
+both the `tiny` and `base` WhisperKit models. Background/locked-screen
+operation, extended-session battery/thermal behavior, and outdoor VAD
+performance (wind, traffic) are the main things still needing real-world
+verification — see the checklist below.
 
 ## Known simplifications / open risks
 
 - **`SupportedLanguages`** starts from a curated candidate list, then
-  filters it against `SFSpeechRecognizer.supportedLocales()` at runtime.
-  There's no bulk "list every language" API on the `Translation` side, so
-  the candidate list itself isn't derived from anything — it's a
-  reasonable starting set, not an exhaustive one.
-- **Language-ID confidence threshold (0.6, in `RecognitionConfig`)** is a
-  sensible starting default, not a measured value — needs tuning against
-  real bilingual speech.
-- **VAD thresholds** are unverified outdoors (wind, traffic, walking noise)
-  — only tested against synthetic buffers so far.
+  filters it against `SFSpeechRecognizer.supportedLocales()` at runtime
+  (retrying for a few seconds within one call, since on-device readiness
+  has been observed to lag rather than be instantly accurate). There's no
+  bulk "list every language" API on the `Translation` side, so the
+  candidate list itself isn't derived from anything — it's a reasonable
+  starting set, not an exhaustive one.
+- **Language-ID confidence threshold and model choice (tiny vs. base) are
+  both live-editable in Settings**, not fixed constants — real tuning
+  needs real device iteration, which is ongoing. There's no single
+  "correct" value yet.
+- **The cross-check fallback (`ConversationLoopController.crossCheckLanguage`)
+  is a heuristic**, not a guarantee — `NLLanguageRecognizer` is itself
+  known to be less reliable on short phrases. It's a second, differently-
+  biased opinion, not a solved problem.
+- **VAD thresholds** are tuned from real testing but not from extended
+  outdoor sessions (wind, traffic, walking noise) — the original synthetic-
+  buffer-only defaults have already been adjusted once based on real usage
+  (see `RecognitionConfig`/`VADSensitivityPreset`), and will likely need
+  more.
 - **No programmatic way to install a missing on-device STT locale, TTS
   voice, or force a specific Translation pack download** — the app can only
   point the user at Settings for any of these.
 - Real Bluetooth HFP↔A2DP switching latency/glitches between turns haven't
-  been measured on hardware.
-- **Background/locked-screen operation** (`UIBackgroundModes: audio`) lets
-  iOS keep the app's `AVAudioSession` — and therefore the mic, WhisperKit,
-  Translation, and TTS — running with the screen locked, the same
-  legitimate mechanism voice-memo/VoIP/transcription apps use. Not yet
-  verified on-device for extended sessions: real-world behavior under
-  memory pressure, CoreML inference speed while backgrounded, and battery
-  drain over a long walk are all unconfirmed.
+  been formally measured, though nothing in testing so far has flagged it
+  as a problem.
+- **Background/locked-screen operation** works for the core loop (mic,
+  language-ID, transcription, translation, TTS all confirmed audible with
+  the screen locked), but extended-session behavior — memory pressure,
+  CoreML inference speed while backgrounded over a long walk, and battery
+  drain — is still unverified.
 
-## Manual test checklist (do this before trusting M5–M8)
+## Manual test checklist
 
-1. Fresh install, walk through onboarding end-to-end, including the
-   language-pack priming step.
-2. Say phrases in both languages, several times each — check language-ID
-   accuracy and how the 0.6 confidence threshold feels.
-3. Full hands-free loop: tap Start, just talk, no buttons — does turn
-   segmentation feel natural (cut off mid-sentence? too slow to respond?).
-4. Settings: voice picker actually changes the voice, rate slider has an
-   audible effect, VAD sensitivity presets change cutoff timing.
-5. Pull headphones mid-session and place a call mid-session — should pause
+1. Fresh install, walk through onboarding end-to-end, including both the
+   Translation pack and WhisperKit model priming steps.
+2. Auto-detect several turns in each language, switching back and forth —
+   check how the confidence threshold and cross-check fallback feel; adjust
+   the Settings sliders if it's guessing wrong too often or rejecting too
+   eagerly.
+3. A/B the `tiny` vs. `base` model in Settings (Advanced) over the same set
+   of test phrases — no verified answer yet on whether `base`'s accuracy
+   is worth its extra size/latency.
+4. Full hands-free loop outdoors, walking, with some wind/ambient noise —
+   the main untested condition for VAD.
+5. Lock the screen mid-session for an extended period (several minutes,
+   several turns) — check the core loop keeps working, and watch for
+   battery/thermal effects over a longer walk.
+6. Pull headphones mid-session and place a call mid-session — should pause
    gracefully, not crash.
+7. Settings: voice picker actually changes the voice (try downloading a new
+   one via "Manage voices in Settings" and confirm it shows up without
+   relaunching), rate slider has an audible effect, VAD sensitivity presets
+   change cutoff timing.
+
+## Debugging
+
+Every module logs its state transitions and failures through `AppLog`,
+viewable in-app without a Mac nearby: Settings > Debug Log, or a "Debug
+Log" link on the Welcome screen (reachable even mid-onboarding). Use the
+Share button there to export the log as text. This is how essentially
+every bug in `CLAUDE.md` past the first few was actually root-caused —
+default to grabbing a log capture before guessing at a fix for anything
+that only shows up on a real device.
 
 ## License
 
