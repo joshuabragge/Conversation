@@ -34,6 +34,24 @@ struct WhisperModelRowView: View {
             // background prewarm) finishing concurrently.
             isDownloaded = manager.isDownloaded(model)
         }
+        .swipeActions(edge: .trailing) {
+            // Only offered for a model that's both downloaded and not the
+            // bundled tiny one — `manager.delete(_:)` already guards this,
+            // but hiding the action entirely reads better than showing a
+            // swipe action that would just throw.
+            if isDownloaded && !manager.isBundled(model) {
+                Button(role: .destructive) {
+                    do {
+                        try manager.delete(model)
+                        isDownloaded = manager.isDownloaded(model)
+                    } catch {
+                        errorMessage = error.localizedDescription
+                    }
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
     }
 
     @ViewBuilder

@@ -127,7 +127,12 @@ downloaded/not-downloaded indicator per model), so you can get one cached
 before you actually leave for a walk instead of finding out you need it
 mid-conversation — though `small` and up are untested in this app so far;
 they're built for full transcription quality, not a single quick
-language-ID pass, and may just be too slow on a phone to be worth it.
+language-ID pass, and may just be too slow on a phone to be worth it. Swipe
+a downloaded model to delete just that one, or use "Delete Downloaded
+Models" to clear all of them at once — the bundled `tiny` model is never
+affected either way, and deleting the currently-selected model resets the
+selection back to `tiny` automatically rather than leaving Settings pointed
+at something no longer on disk.
 
 **Re-run `xcodegen generate` after adding, removing, or renaming any Swift
 file** — the project file is a build artifact of `project.yml` + whatever's
@@ -448,7 +453,12 @@ the checklist below.
    with no download button (fresh install, airplane mode is fine). Download
    one of the other models and confirm the progress bar actually moves and
    the row flips to "Downloaded"; relaunch (or toggle airplane mode) and
-   confirm it loads from disk with no network needed afterward.
+   confirm it loads from disk with no network needed afterward. Then swipe
+   that model to delete it (row flips back to showing a Download button;
+   confirm `tiny`'s row has no swipe action at all). Download two non-tiny
+   models, select one of them as the active "Detection Model," then use
+   "Delete Downloaded Models" and confirm both are gone, the picker snaps
+   back to Tiny, and a subsequent turn still works using the bundled model.
 9. Settings > Languages: change the language pair without going through
    onboarding, including while a conversation is actively running (should
    stop, apply the new pair, and resume) — then use "Refresh available

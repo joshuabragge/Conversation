@@ -119,6 +119,14 @@ root-caused from a real log, not from reasoning about the code alone.
   after a conversation turn silently triggered a download). If you need to
   know whether a model is on disk, or want to trigger its download, go
   through `WhisperModelManager.shared`, not a new UserDefaults key.
+  `delete(_:)`/`deleteAllDownloaded()` are the same idea in reverse — they
+  throw `.cannotDeleteBundledModel` for `tiny` rather than silently no-op-ing
+  (so a "delete everything" loop notices tiny wasn't covered instead of
+  assuming it was), and reset `RecognitionConfig.whisperModel` back to
+  `.tiny` if the model being deleted was the active selection, so Settings
+  never points at a model with nothing left on disk — that would otherwise
+  silently redownload it (needing network) the next time `LanguageIdentifier`
+  actually needs it, mid-walk.
 - **The `tiny` WhisperKit model ships inside the app bundle; nothing else
   does.** `WhisperKitConfig(modelFolder:)` works identically whether the
   folder is a previously-downloaded cache dir or one shipped in the app

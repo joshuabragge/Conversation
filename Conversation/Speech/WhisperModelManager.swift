@@ -1,6 +1,17 @@
 import Foundation
 import WhisperKit
 
+enum WhisperModelManagerError: LocalizedError {
+    case cannotDeleteBundledModel
+
+    var errorDescription: String? {
+        switch self {
+        case .cannotDeleteBundledModel:
+            return "The bundled model ships inside the app itself and can't be deleted separately."
+        }
+    }
+}
+
 /// Manages WhisperKit model downloads independently of any particular
 /// `LanguageIdentifier` instance, so Settings can show real download
 /// status/progress and trigger a download ahead of time — not just
@@ -103,5 +114,55 @@ final class WhisperModelManager: ObservableObject {
             AppLog.error(.languageID, "WhisperModelManager: \(model.modelName) download failed after \(Date().timeIntervalSince(start))s: \(error.localizedDescription)")
             throw error
         }
+    }
+
+    /// Deletes `model`'s downloaded files from disk and forgets the cached
+    /// folder, freeing up the storage it used — the counterpart to
+    /// `download(_:)` for the "I only wanted to try this one" case. The
+    /// bundled `tiny` model can't be deleted this way (nothing to remove
+    /// short of uninstalling the app) — throws rather than silently
+    /// no-op-ing so a caller looping over "delete everything" notices,
+    /// instead of the tiny model quietly not being covered by that loop.
+    ///
+    /// If `model` was the active detection model
+    /// (`RecognitionConfig.whisperModel`), resets the selection back to
+    /// `.tiny` — leaving Settings pointed at a model with nothing left on
+    /// disk would silently trigger a redownload the next time
+    /// `LanguageIdentifier` actually needs it, i.e. unexpectedly needing
+    /// network mid-walk instead of using the always-available bundled model.
+    func delete(_ model: WhisperModelOption) throws {
+        guard !isBundled(model) else {
+            throw WhisperModelManagerError.cannotDeleteBundledModel
+        }
+        if let folder = cachedFolder(for: model) {
+            try FileManager.default.removeItem(atPath: folder)
+            AppLog.info(.languageID, "WhisperModelManager: deleted \(model.modelName) from \(folder)")
+        }
+        invalidateCache(for: model)
+        downloadProgress[model] = nil
+        isDownloading[model] = nil
+        if RecognitionConfig.whisperModel == model {
+            AppLog.info(.languageID, "WhisperModelManager: \(model.modelName) was the active detection model, resetting to tiny")
+            RecognitionConfig.whisperModel = .tiny
+        }
+    }
+
+    /// Deletes every currently-downloaded model except the bundled `tiny`
+    /// one — the "free up storage" bulk action in Settings. Best-effort:
+    /// keeps going if one deletion fails rather than aborting the rest,
+    /// and returns whichever models actually failed so the caller can
+    /// surface that instead of silently claiming success.
+    @discardableResult
+    func deleteAllDownloaded() -> [WhisperModelOption] {
+        var failed: [WhisperModelOption] = []
+        for model in WhisperModelOption.allCases where !isBundled(model) && isDownloaded(model) {
+            do {
+                try delete(model)
+            } catch {
+                AppLog.error(.languageID, "WhisperModelManager: failed to delete \(model.modelName): \(error.localizedDescription)")
+                failed.append(model)
+            }
+        }
+        return failed
     }
 }

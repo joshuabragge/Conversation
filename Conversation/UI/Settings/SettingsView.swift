@@ -31,6 +31,7 @@ struct SettingsView: View {
     // — see that file for what these actually control.
     @AppStorage("com.joshuabragge.Conversation.vadSpeechThreshold") private var vadSpeechThreshold = 0.18
     @AppStorage("com.joshuabragge.Conversation.vadMinSpeechDuration") private var vadMinSpeechDuration = 0.15
+    @State private var confirmDeleteAllModels = false
 
     init(pair: LanguagePair, controller: ConversationLoopController) {
         self.pair = pair
@@ -40,6 +41,15 @@ struct SettingsView: View {
 
     private var vadSensitivity: VADSensitivityPreset {
         VADSensitivityPreset(rawValue: vadSensitivityRaw) ?? .medium
+    }
+
+    /// Whether there's anything for "Delete downloaded models" to do —
+    /// hides the button entirely rather than showing it disabled/no-op
+    /// when only the always-present bundled `tiny` model is around.
+    private var hasDeletableModels: Bool {
+        WhisperModelOption.allCases.contains {
+            !modelManager.isBundled($0) && modelManager.isDownloaded($0)
+        }
     }
 
     var body: some View {
@@ -117,6 +127,14 @@ struct SettingsView: View {
                     Text("Small and up are untested in this app — they're built for full transcription quality, not a quick language-ID pass, so they may be too slow to be worth using here. Try at your own pace; the default stays Tiny.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Text("Swipe a downloaded model to delete just that one.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if hasDeletableModels {
+                        Button("Delete Downloaded Models", role: .destructive) {
+                            confirmDeleteAllModels = true
+                        }
+                    }
                 } header: {
                     Text("Advanced (Experimental)")
                 }
@@ -159,6 +177,15 @@ struct SettingsView: View {
                 // the picker" can be checked against real device state
                 // instead of guessed at.
                 speechOutput.logAvailableVoiceInventory()
+            }
+            .confirmationDialog(
+                "Delete every downloaded detection model? The bundled Tiny model stays either way — this just frees up storage, you can always redownload the rest later.",
+                isPresented: $confirmDeleteAllModels, titleVisibility: .visible
+            ) {
+                Button("Delete Downloaded Models", role: .destructive) {
+                    modelManager.deleteAllDownloaded()
+                }
+                Button("Cancel", role: .cancel) {}
             }
         }
     }
