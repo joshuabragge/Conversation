@@ -10,9 +10,10 @@ headphone mic, and Google's needs network and handles headphone audio
 routing poorly. This app is narrower and more specific: pick two languages
 once, then just talk — in either language, in any order — and hear the
 translation spoken back through your headphones, with no button presses and
-no network once initial setup is done. Listening, language-ID, transcription,
-and translation all keep running with the screen locked; spoken output while
-backgrounded is a known rough edge — see the background note below.
+no network once initial setup is done. The app is deliberately
+foreground-only — see "Why the app is foreground-only" below — so instead of
+trying to keep working with the screen locked, it just keeps the screen
+awake for as long as a session is running.
 
 ## How it works
 
@@ -29,10 +30,14 @@ backgrounded is a known rough edge — see the background note below.
    other language.
 5. **Speak it back.** `AVSpeechSynthesizer` speaks the translation, with the
    audio session temporarily switched to a playback-optimized config so
-   Bluetooth headphones aren't stuck in low-quality call-audio mode for it
-   (foreground only — see the background note in Architecture).
+   Bluetooth headphones aren't stuck in low-quality call-audio mode for it.
 6. **Back to listening**, automatically, once the mic is actually capturing
    again.
+
+The screen stays awake (but not locked with the side button) for as long as
+a session is running, so the loop above doesn't get interrupted by the
+device's own auto-lock timeout mid-walk — see "Why the app is
+foreground-only" below.
 
 A manual language chip lets you override a wrong auto-detect guess, and
 gets suggested automatically after a couple of consecutive misses.
@@ -93,7 +98,7 @@ on disk at generation time, not a live index.
 
 The simulator can build and run the UI, but can't meaningfully exercise:
 mic input quality, on-device STT/WhisperKit accuracy, Bluetooth audio
-routing/quality, background/locked-screen behavior, or the
+routing/quality, the idle-timer/backgrounding pause behavior, or the
 headphone-disconnect/interruption handling. Treat a successful simulator
 build as "compiles and the view graph type-checks," not as "works."
 Anything involving real audio needs a physical device — all of the fixes
@@ -136,12 +141,12 @@ Conversation/
 
 - **`AudioSessionManager`** — owns two `AVAudioSession` configs, switched at
   turn boundaries: *Listening* (`.playAndRecord`, mic on) and *Speaking*
-  (`.playback`, mic off, foreground only — see below). This split exists
-  specifically so Bluetooth accessories can renegotiate up to A2DP for TTS
-  output instead of staying pinned to HFP (mono, low-bitrate) for the whole
-  session — the likely reason similar apps sound bad over AirPods. Also
-  tracks headphone connect/disconnect and system interruptions (calls, etc.)
-  and pauses the loop for both.
+  (`.playback`, mic off). This split exists specifically so Bluetooth
+  accessories can renegotiate up to A2DP for TTS output instead of staying
+  pinned to HFP (mono, low-bitrate) for the whole session — the likely
+  reason similar apps sound bad over AirPods. Also tracks headphone
+  connect/disconnect and system interruptions (calls, the app being
+  backgrounded, etc.) and pauses the loop for both.
 - **`MicrophoneInputManager`** — the mic tap for hands-free listening, plus
   a ~1s rolling pre-roll buffer (always capturing, independent of VAD
   state) so the actual onset of speech isn't lost to VAD's confirmation
@@ -187,7 +192,11 @@ Conversation/
   including the cross-check fallback when WhisperKit's absolute confidence
   in its own pick is mediocre (transcribes the same clip in both candidate
   locales via Apple's STT and picks whichever reads as more plausible text
-  in its own language, via `NLLanguageRecognizer`).
+  in its own language, via `NLLanguageRecognizer`). Also disables the idle
+  timer (`UIApplication.shared.isIdleTimerDisabled`) for as long as a
+  session is running, so the screen doesn't auto-lock mid-walk — see "Why
+  the app is foreground-only" below for why that's the mechanism instead of
+  locked-screen operation.
 - **`AppLog`/`LogStore`** — every module logs its state transitions and
   failures through this, mirrored to both Xcode's console and an in-app
   viewer (Settings > Debug Log, or a link on the Welcome screen). This is
@@ -228,27 +237,46 @@ for a model most people won't switch to isn't worth it by default. The
 binary model files themselves are tracked via **Git LFS**, not plain git
 blobs — see Setup above.
 
-### Why background/locked-screen operation needed care, not just an Info.plist entry
+### Why the app is foreground-only
 
-`UIBackgroundModes: audio` is the standard mechanism that lets an active
-`AVAudioSession` (and therefore the mic, WhisperKit, Translation, and TTS)
-keep running with the screen locked, and it does: mic capture, language-ID,
-transcription, translation, and earcon playback are all confirmed working
-locked. **Spoken output specifically (`AVSpeechSynthesizer`) is not** —
-it goes silent while backgrounded regardless of audio session category, a
+An earlier version declared `UIBackgroundModes: audio` so the mic,
+WhisperKit, Translation, and TTS could all keep running with the screen
+locked — and everything except TTS did work locked. **Spoken output
+specifically (`AVSpeechSynthesizer`) never did**: it produces no audio at
+all while backgrounded regardless of audio session category, a
 long-standing, still-unresolved issue reported by other developers against
 this exact framework going back to iOS 13, not something specific to this
-app's setup. Two targeted fixes (keeping `.playAndRecord` instead of
-switching to `.playback` while backgrounded; rendering to a file played
-back via `AVAudioPlayer` instead of `speak()`'s live output) both failed to
-resolve it on real-device testing. Current state: a documented community
-workaround (`SpeechOutputService.startKeepAliveTone`, a second unrelated
-`AVAudioPlayer` tone playing concurrently during synthesis) is applied but
-not yet confirmed to work, and a 15s timeout wraps every `speak()` call
-regardless (`RecognitionConfig.speechOutputTimeout`) so a stuck synthesis
-can't wedge the hands-free loop. If the workaround doesn't pan out, the
-plan is to scope spoken output to foreground-only rather than keep chasing
-a platform bug. See `CLAUDE.md` for the full isolation story.
+app's setup. Three independent fixes were tried on real hardware and all
+failed to resolve it: keeping `.playAndRecord` instead of switching to
+`.playback` while backgrounded, rendering to a file played back via
+`AVAudioPlayer` instead of `speak()`'s live output, and a documented
+community workaround (a second unrelated `AVAudioPlayer` tone playing
+concurrently during synthesis). A pipeline that can listen and translate
+locked but can never speak the result back defeats the point, so rather
+than keep chasing an apparently-unfixable platform bug, the background mode
+was removed entirely.
+
+The app is now foreground-only by design, with two consequences:
+
+- **The screen is kept awake instead of trying to keep running locked** —
+  `ConversationLoopController` sets `UIApplication.shared.isIdleTimerDisabled
+  = true` for as long as a session is running, so the device's own
+  auto-lock timeout never fires mid-walk. This only suppresses the
+  *automatic* lock — pressing the side button still locks the phone
+  immediately, same as any app.
+- **Getting backgrounded anyway (a call, switching apps, manually locking)
+  pauses the loop, not crashes it** — the existing audio-interruption
+  handling (`AudioSessionManager.onInterruptionBegan`, already needed for
+  phone calls) already covers this: the system automatically deactivates an
+  active audio session for an app without the background mode, which
+  triggers the same interruption path. The loop stops cleanly and shows
+  "Paused — tap start to resume" rather than trying to guess whether it's
+  safe to auto-resume.
+
+`RecognitionConfig.speechOutputTimeout` (15s), wrapping every `speak()`
+call, stays in place regardless — general insurance against a hung
+synthesis call, not specific to the background bug. See `CLAUDE.md` for the
+full isolation story if this ever needs revisiting.
 
 ## Current status
 
@@ -275,12 +303,12 @@ full, still-growing list with root causes.
 - [ ] M9 — Hardening: device/firmware matrix, battery/thermal, accessibility, App Store prep
 
 The core loop (listen → identify → transcribe → translate → speak → back to
-listening) has been confirmed working end-to-end on a real device in the
-foreground, with both the `tiny` and `base` WhisperKit models. Spoken output
-while backgrounded/locked is currently unreliable (see the background note
-above) and is being actively tested; extended-session battery/thermal
-behavior and outdoor VAD performance (wind, traffic) are also still needing
-real-world verification — see the checklist below.
+listening) has been confirmed working end-to-end on a real device, with both
+the `tiny` and `base` WhisperKit models. The app is deliberately
+foreground-only (see "Why the app is foreground-only" above); extended-session
+battery/thermal behavior with the screen kept awake, and outdoor VAD
+performance (wind, traffic), are still needing real-world verification — see
+the checklist below.
 
 ## Known simplifications / open risks
 
@@ -310,14 +338,13 @@ real-world verification — see the checklist below.
 - Real Bluetooth HFP↔A2DP switching latency/glitches between turns haven't
   been formally measured, though nothing in testing so far has flagged it
   as a problem.
-- **Background/locked-screen operation** works for everything except spoken
-  output: mic, language-ID, transcription, and translation are all confirmed
-  running with the screen locked, but `AVSpeechSynthesizer` output is
-  currently unreliable while backgrounded (see the background note above) —
-  under active investigation, with foreground-only spoken output as the
-  fallback plan if the current workaround doesn't hold up. Extended-session
-  behavior — memory pressure, CoreML inference speed while backgrounded over
-  a long walk, and battery drain — is also still unverified.
+- **The app is foreground-only, by design** (see "Why the app is
+  foreground-only" above) — locking the screen or switching apps mid-session
+  pauses the loop rather than continuing in the background. The idle timer
+  is disabled while a session runs instead, so the screen shouldn't
+  auto-lock on its own during normal use. Extended-session behavior with the
+  screen kept awake — battery drain and thermal effects over a long walk —
+  is still unverified.
 
 ## Manual test checklist
 
@@ -332,11 +359,14 @@ real-world verification — see the checklist below.
    is worth its extra size/latency.
 4. Full hands-free loop outdoors, walking, with some wind/ambient noise —
    the main untested condition for VAD.
-5. Lock the screen mid-session for an extended period (several minutes,
-   several turns) — check the core loop keeps working, and watch for
-   battery/thermal effects over a longer walk.
-6. Pull headphones mid-session and place a call mid-session — should pause
-   gracefully, not crash.
+5. Start a session and leave the phone untouched past the device's normal
+   auto-lock timeout — confirm the screen stays on (idle timer disabled)
+   for as long as several turns take, and watch for battery/thermal effects
+   over a longer walk.
+6. Pull headphones mid-session, place a call mid-session, and manually lock
+   the screen (side button) mid-session — all three should pause the loop
+   gracefully with a "tap start to resume" message, not crash or silently
+   keep trying to run.
 7. Settings: voice picker actually changes the voice (try downloading a new
    one via "Manage voices in Settings" and confirm it shows up without
    relaunching), rate slider has an audible effect, VAD sensitivity presets

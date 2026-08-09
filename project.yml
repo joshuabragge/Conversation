@@ -50,14 +50,19 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        # Lets the app keep listening/translating with the screen locked
-        # or backgrounded, as long as it holds an active AVAudioSession —
-        # the standard, App-Review-legitimate mechanism for continuous-
-        # recording apps (same one voice memo / VoIP / transcription apps
-        # use), not a workaround. Genuinely required for a walking app:
-        # without it, iOS suspends the mic the moment the screen locks.
-        UIBackgroundModes:
-          - audio
+        # Deliberately NOT declaring UIBackgroundModes: [audio] — this app
+        # used to, to keep listening/translating with the screen locked, but
+        # AVSpeechSynthesizer producing no audio while backgrounded turned
+        # out to be a long-standing, unresolved Apple platform bug (see
+        # CLAUDE.md), not something fixable here. Rather than keep the mic
+        # running in the background for a pipeline that can't speak the
+        # result back, the app is foreground-only by design now: it disables
+        # the idle timer while a session is running instead (see
+        # ConversationLoopController), so the screen just doesn't
+        # auto-lock, and pauses gracefully (via the existing audio
+        # interruption handling) if it's backgrounded anyway. Don't add this
+        # back reflexively just because "walking app" sounds like it needs
+        # it — it doesn't fix the actual problem.
 
   ConversationTests:
     type: bundle.unit-test

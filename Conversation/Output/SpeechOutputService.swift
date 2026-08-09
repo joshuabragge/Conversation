@@ -17,32 +17,22 @@ enum SpeechOutputError: LocalizedError {
 /// Wraps `AVSpeechSynthesizer` for per-locale text-to-speech output, with
 /// a user-configurable rate and per-language voice override for Settings.
 ///
-/// **Background TTS is a long-standing, still-unresolved Apple platform
-/// issue, not something specific to this app.** Multiple independent
-/// developer forum threads going back to iOS 13 report exactly this:
-/// `AVSpeechSynthesizer` produces no audio at all while the app isn't in
-/// the foreground (locked screen, another app active), regardless of audio
-/// session configuration. Confirmed here two different ways, both of which
-/// independently failed to fix it: switching `AudioSessionManager` to stay
-/// in `.playAndRecord` instead of `.playback` while backgrounded (ruled out
-/// session category), and rendering via `write(_:toBufferCallback:)` to a
-/// file played back with `AVAudioPlayer` instead of `speak()`'s live output
-/// (ruled out "live playback path specifically"). Both mic capture and
-/// `AVAudioPlayer`-based earcons keep working fine under the exact same
-/// backgrounded conditions, so this isn't background audio being blocked in
-/// general.
-///
-/// Current approach layers on a workaround reported by other developers
-/// hitting the same issue: keep a second, unrelated `AVAudioPlayer` sound
-/// actively playing *during* synthesis (`startKeepAliveTone`/
-/// `stopKeepAliveTone`), which several report "wakes up" the shared audio
-/// render path enough for the synthesizer's own output to come through.
-/// This is an informal community workaround for what looks like an Apple
-/// bug, not a confirmed mechanism — if it doesn't hold up either, the
-/// right move is probably to stop fighting `AVSpeechSynthesizer` in the
-/// background and design around the limitation (e.g. queue translations
-/// and speak them once the app returns to the foreground) rather than
-/// trying a fourth blind technical fix.
+/// **Deliberately foreground-only.** `AVSpeechSynthesizer` producing no
+/// audio at all while the app isn't in the foreground (locked screen,
+/// another app active) is a long-standing, unresolved Apple platform issue
+/// — multiple independent developer forum threads going back to iOS 13
+/// report exactly this, regardless of audio session configuration. Three
+/// independent things were tried here and all failed to fix it: keeping
+/// `AudioSessionManager` in `.playAndRecord` instead of `.playback` while
+/// backgrounded, rendering via `write(_:toBufferCallback:)` to a file
+/// played back with `AVAudioPlayer` instead of `speak()`'s live output, and
+/// a community-reported "keep a second unrelated `AVAudioPlayer` sound
+/// playing during synthesis" workaround. Rather than keep chasing a
+/// platform bug, the app no longer declares `UIBackgroundModes: audio` at
+/// all (see `project.yml`) and instead keeps the screen awake while a
+/// session is running (`ConversationLoopController`) so it never needs to
+/// speak while backgrounded in the first place — see CLAUDE.md for the
+/// full history if this ever needs revisiting.
 @MainActor
 final class SpeechOutputService: NSObject, ObservableObject {
     @Published private(set) var isSpeaking = false
@@ -57,7 +47,6 @@ final class SpeechOutputService: NSObject, ObservableObject {
     private let synthesizer = AVSpeechSynthesizer()
     private var player: AVAudioPlayer?
     private var playbackContinuation: CheckedContinuation<Void, Never>?
-    private var keepAlivePlayer: AVAudioPlayer?
 
     /// True if at least one installed voice exists for `language`. There is
     /// no programmatic way to install a missing voice — callers should
@@ -114,21 +103,7 @@ final class SpeechOutputService: NSObject, ObservableObject {
         defer { isSpeaking = false }
         let start = Date()
 
-        // See the type's doc comment: keeping a second AVAudioPlayer sound
-        // actively playing during synthesis is a community-reported
-        // workaround for AVSpeechSynthesizer producing no audio while
-        // backgrounded. Stopped before real playback starts, not mixed
-        // with it.
-        startKeepAliveTone()
-        let fileURL: URL
-        do {
-            fileURL = try await synthesizeToFile(utterance)
-        } catch {
-            stopKeepAliveTone()
-            throw error
-        }
-        stopKeepAliveTone()
-
+        let fileURL = try await synthesizeToFile(utterance)
         defer { try? FileManager.default.removeItem(at: fileURL) }
         AppLog.debug(.speechOutput, "speak: synthesized to \(fileURL.lastPathComponent) in \(Date().timeIntervalSince(start))s, playing back")
         try await playFile(at: fileURL)
@@ -138,28 +113,9 @@ final class SpeechOutputService: NSObject, ObservableObject {
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
-        stopKeepAliveTone()
         player?.stop()
         playbackContinuation?.resume()
         playbackContinuation = nil
-    }
-
-    private func startKeepAliveTone() {
-        let data = ToneGenerator.wavData(frequency: 440, duration: 0.5)
-        guard let tonePlayer = try? AVAudioPlayer(data: data) else {
-            AppLog.error(.speechOutput, "startKeepAliveTone: failed to create player")
-            return
-        }
-        tonePlayer.numberOfLoops = -1
-        tonePlayer.volume = 0.03
-        keepAlivePlayer = tonePlayer
-        tonePlayer.play()
-        AppLog.debug(.speechOutput, "startKeepAliveTone: playing")
-    }
-
-    private func stopKeepAliveTone() {
-        keepAlivePlayer?.stop()
-        keepAlivePlayer = nil
     }
 
     /// Renders `utterance` to a temp audio file via
@@ -183,11 +139,11 @@ final class SpeechOutputService: NSObject, ObservableObject {
                 continuation.resume(with: result)
             }
 
-            // Logged per-buffer (not just start/end) specifically so a
-            // future "still silent in background" log capture can show
-            // definitively whether synthesis produces *any* data at all
-            // while backgrounded, vs. producing data that then fails to
-            // play — those point to very different next steps.
+            // Logged per-buffer (not just start/end) so a Debug Log capture
+            // can show whether a stuck `speak()` call (caught by
+            // `RecognitionConfig.speechOutputTimeout`) never produced any
+            // data at all vs. produced data that then failed to play —
+            // those point to very different next steps.
             synthesizer.write(utterance) { buffer in
                 guard let pcmBuffer = buffer as? AVAudioPCMBuffer else {
                     AppLog.error(.speechOutput, "synthesizeToFile: write() callback delivered a non-PCM buffer")

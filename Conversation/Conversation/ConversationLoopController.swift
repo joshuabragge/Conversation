@@ -1,5 +1,6 @@
 import Foundation
 import NaturalLanguage
+import UIKit
 
 /// The central hands-free conversation state machine (see `TurnState`),
 /// tying together every module built in M1–M6:
@@ -19,7 +20,10 @@ import NaturalLanguage
 @MainActor
 final class ConversationLoopController: ObservableObject {
     @Published private(set) var state: TurnState = .idle {
-        didSet { AppLog.info(.conversation, "state: \(oldValue) -> \(state)") }
+        didSet {
+            AppLog.info(.conversation, "state: \(oldValue) -> \(state)")
+            updateIdleTimer()
+        }
     }
     @Published private(set) var heardText: String = ""
     @Published private(set) var heardLanguage: Locale.Language?
@@ -133,6 +137,23 @@ final class ConversationLoopController: ObservableObject {
         AppLog.debug(.conversation, "armVADGracePeriod: ignoring VAD input until \(vadGracePeriod)s from now")
     }
 
+    /// Keeps the screen from auto-locking for as long as a hands-free
+    /// session is running (any state but `.idle` — mid-turn processing and
+    /// a visible `.rejected`/`.error` banner all still count, since the
+    /// walk is still "in progress" from the user's perspective). This is
+    /// the replacement for the old locked-screen operation: the app no
+    /// longer declares `UIBackgroundModes: audio` (see `project.yml`)
+    /// because `AVSpeechSynthesizer` going silent while backgrounded turned
+    /// out to be an unresolved Apple platform bug, not something fixable
+    /// here — so instead of trying to keep working with the screen off,
+    /// the app just doesn't let the screen turn off on its own while it's
+    /// actively doing something. Only suppresses the *automatic*
+    /// idle-timeout lock — the side button still locks the phone
+    /// immediately, same as any other app.
+    private func updateIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled = state != .idle
+    }
+
     // MARK: - VAD-driven turn boundaries
 
     private func handleUtteranceStart() {
@@ -172,7 +193,14 @@ final class ConversationLoopController: ObservableObject {
         guard wasRunningBeforeInterruption else { return }
         AppLog.info(.conversation, "handleInterruptionBegan: pausing")
         stop()
-        state = .error("Paused for a call or other audio — tap start to resume.")
+        // Also fires when the app is backgrounded, not just for a real call
+        // or other app's audio — the system automatically deactivates an
+        // active session for an app that doesn't declare
+        // `UIBackgroundModes: audio` (deliberate here, see project.yml), so
+        // "went to the background" and "a call came in" both land here with
+        // no way to tell them apart from the notification alone. Either
+        // way, requiring a manual restart (not auto-resuming) is correct.
+        state = .error("Paused — tap start to resume.")
     }
 
     private func handleInterruptionEnded() {
@@ -326,17 +354,17 @@ final class ConversationLoopController: ObservableObject {
                     try await self.speechOutput.speak(translated, language: targetLanguage)
                 }
             } catch is TimeoutError {
-                // Guards against AVSpeechSynthesizer's documented
-                // background-silence issue wedging the whole hands-free
-                // loop forever with the mic left off — see
-                // SpeechOutputService's doc comment. Recovers the loop
-                // even though this specific turn's audio never played.
+                // General safety net against a stuck speech-synthesis call
+                // wedging the whole hands-free loop forever with the mic
+                // left off — see SpeechOutputService's doc comment.
+                // Recovers the loop even though this specific turn's audio
+                // never played.
                 AppLog.error(.conversation, "process: speak() timed out after \(RecognitionConfig.speechOutputTimeout)s")
                 try? audioSession.activateListening()
                 vad.reset()
                 armVADGracePeriod()
                 try? mic.restartEngine()
-                await showErrorThenResumeListening("Couldn't speak the translation — this can happen in the background. Check the Debug Log.")
+                await showErrorThenResumeListening("Couldn't speak the translation. Check the Debug Log.")
                 return
             }
 

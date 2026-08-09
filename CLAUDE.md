@@ -3,10 +3,10 @@
 A hands-free iOS translation app for practicing a language solo, on a walk,
 with headphones: speak either of two chosen languages, it detects which one,
 translates it, and speaks the result back through the headphones — on-device
-after first-run setup. Listening/identification/transcription/translation
-all keep running with the screen locked; spoken output while backgrounded is
-a known unresolved rough edge (see the Background section below). See
-`README.md` for the full pitch and architecture.
+after first-run setup. Deliberately foreground-only (see the Audio session &
+background section below for why): the app disables the idle timer while a
+session is running instead of trying to keep working with the screen locked.
+See `README.md` for the full pitch and architecture.
 
 ## Commands
 
@@ -68,8 +68,23 @@ root-caused from a real log, not from reasoning about the code alone.
   distinct configs, switched at each turn boundary. This is deliberate, not
   incidental: holding `.playAndRecord` the whole time pins Bluetooth
   accessories to low-quality HFP even during TTS playback — the actual
-  reason this kind of app tends to sound bad over AirPods. **Except while
-  backgrounded** — see the Background section below.
+  reason this kind of app tends to sound bad over AirPods.
+- **The app is deliberately foreground-only — no `UIBackgroundModes: audio`.**
+  It used to declare this to keep listening/translating with the screen
+  locked, but `AVSpeechSynthesizer` going silent while backgrounded turned
+  out to be a long-standing, unresolved Apple platform bug (see "Audio
+  session & background" below) — the app could listen and translate locked,
+  it just couldn't ever speak the result back, which defeats the point.
+  Removed rather than continuing to chase it. Instead,
+  `ConversationLoopController.updateIdleTimer` sets
+  `UIApplication.shared.isIdleTimerDisabled = true` for as long as a session
+  is running, so the screen just doesn't auto-lock in the first place — the
+  existing audio-interruption handling (`handleInterruptionBegan`) already
+  pauses the loop gracefully if the app *does* get backgrounded (a call, the
+  user switching apps, etc.), requiring a manual restart rather than trying
+  to silently recover. Don't re-add the background mode reflexively because
+  "walking app" sounds like it needs it — it doesn't fix the actual TTS
+  problem, see below.
 - **Min deployment target is iOS 18.0, not 17.4.** The dynamic
   `TranslationSession.Configuration?` API this app needs (swap language
   pairs without tearing down the whole session graph) is 18.0+; 17.4 only
@@ -129,38 +144,38 @@ capture, not from code review.
   with a cryptic OSStatus error, not a missing-voice problem. Fixed in
   `ConversationLoopController.process`: `mic.stopEngine()` before
   `activateSpeaking()`, `mic.restartEngine()` after `activateListening()`.
-- **TTS is silent whenever the app isn't in the foreground (locked screen,
-  another app active) — a long-standing, still-unresolved Apple platform
-  issue, not something specific to this app.** Multiple independent
-  developer forum threads going back to iOS 13 report exactly this:
-  `AVSpeechSynthesizer` produces no audio while backgrounded regardless of
-  audio session config. Confirmed here two different ways, both of which
-  independently *failed* to fix it — which is itself the useful signal,
-  not a wasted effort: (1) keeping `AudioSessionManager` in
-  `.playAndRecord` instead of switching to `.playback` while backgrounded
-  ruled out session category as the cause; (2) rendering via
-  `write(_:toBufferCallback:)` to a file played back with `AVAudioPlayer`
-  instead of `speak()`'s live output ruled out "live playback path
-  specifically." Mic capture and `AVAudioPlayer`-based earcons keep
-  working fine under the exact same backgrounded conditions, so this isn't
-  background audio being blocked in general — it's specific to
-  `AVSpeechSynthesizer` needing *something*, still not fully understood.
-  Current layer: `SpeechOutputService` keeps a second, unrelated
-  `AVAudioPlayer` tone actively playing *during* synthesis
-  (`startKeepAliveTone`), a workaround several other developers report
-  works, on the theory that concurrent `AVAudioPlayer` activity keeps the
-  shared audio render path "trusted" by iOS while backgrounded. Unverified
-  whether this actually holds — if it doesn't, stop trying further blind
-  technical fixes and design around the limitation instead (e.g. queue
-  translations and speak them once the app returns to the foreground).
-  Either way, `ConversationLoopController` now wraps the whole `speak()`
-  call in `RecognitionConfig.speechOutputTimeout` (15s) so a stuck
-  synthesis can't wedge the hands-free loop forever with the mic left off
-  — that safety net stands regardless of whether the keep-alive tone
-  works. The `.playback`-vs-`.playAndRecord` foreground/background
-  branching in `activateSpeaking()` is still worth keeping for its
-  original Bluetooth-quality reason (a route/category property, unrelated
-  to this bug) — it just wasn't the fix for *this* one.
+- **TTS being silent whenever the app isn't in the foreground was chased
+  for three rounds, then the feature was retired instead of fixed — don't
+  redo this work.** `AVSpeechSynthesizer` produces no audio while
+  backgrounded (locked screen, another app active) regardless of audio
+  session config — a long-standing, still-unresolved Apple platform issue,
+  confirmed by multiple independent developer forum threads going back to
+  iOS 13, not something specific to this app. Three independent things
+  were tried and **all failed to fix it**, which is itself the useful
+  signal from all that effort, not a wasted one: (1) keeping
+  `AudioSessionManager` in `.playAndRecord` instead of switching to
+  `.playback` while backgrounded ruled out session category as the cause;
+  (2) rendering via `write(_:toBufferCallback:)` to a file played back with
+  `AVAudioPlayer` instead of `speak()`'s live output ruled out "live
+  playback path specifically"; (3) a community-reported workaround —
+  keeping a second, unrelated `AVAudioPlayer` tone playing *during*
+  synthesis, on the theory that concurrent `AVAudioPlayer` activity keeps
+  the shared audio render path "trusted" by iOS while backgrounded — also
+  didn't hold up on real-device testing. Mic capture and
+  `AVAudioPlayer`-based earcons keep working fine under the exact same
+  backgrounded conditions throughout, so this was never background audio
+  being blocked in general — it's specific to `AVSpeechSynthesizer`
+  needing *something*, still not understood, and apparently not fixable
+  from application code. **Resolution: stopped fighting it.** The app no
+  longer declares `UIBackgroundModes: audio` at all (see the architecture
+  bullet above) — `SpeechOutputService` no longer has the keep-alive-tone
+  workaround, and `AudioSessionManager.activateSpeaking()` no longer has a
+  backgrounded-vs-foreground branch, since the app never runs backgrounded
+  anymore. `RecognitionConfig.speechOutputTimeout` (15s) remains as a
+  general safety net around any hung `speak()` call, background-related or
+  not — cheap insurance, not specific to this bug. If background TTS ever
+  needs revisiting, start by re-reading this entry before trying anything
+  "new" — all three obvious approaches are already ruled out.
 - Earcons must play through `AVAudioPlayer`/the app's own `AVAudioSession`,
   not `AudioServicesPlaySystemSound` — the latter is silenced by the
   physical ring/silent switch; audio routed through the app's session

@@ -22,10 +22,6 @@
 	<string>Conversation listens through your headphones' mic to hear what you say and translate it.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Conversation transcribes your speech on-device to translate it between your two chosen languages.</string>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>audio</string>
-	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
