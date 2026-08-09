@@ -23,6 +23,16 @@ adding, removing, or renaming any `.swift` file, run `xcodegen generate`
 *before* building — a stale `.xcodeproj` will fail with "cannot find type
 in scope" for symbols that are actually defined and correct.
 
+**IMPORTANT**: the bundled WhisperKit `tiny` model
+(`Conversation/Resources/WhisperModels/openai_whisper-tiny/`) is tracked via
+**Git LFS**, not plain git. On a fresh clone without `git lfs install` run
+first, that folder contains tiny LFS pointer text files instead of the real
+~75MB of Core ML weights — `xcodegen generate` and the build both succeed
+regardless (they're still real files at the right paths), but WhisperKit
+fails to load the model at runtime with a Core ML error that gives no hint
+the actual cause is a missing `git lfs pull`. If language-ID mysteriously
+fails only in a fresh checkout, check this first.
+
 ## Testing
 
 Run the full suite (`xcodebuild ... test`) rather than filtering to one file
@@ -78,6 +88,19 @@ root-caused from a real log, not from reasoning about the code alone.
   after a conversation turn silently triggered a download). If you need to
   know whether a model is on disk, or want to trigger its download, go
   through `WhisperModelManager.shared`, not a new UserDefaults key.
+- **The `tiny` WhisperKit model ships inside the app bundle; `base` doesn't.**
+  `WhisperKitConfig(modelFolder:)` works identically whether the folder is a
+  previously-downloaded cache dir or one shipped in the app itself — see
+  `WhisperModelManager.bundledFolder`, checked before the cache/download
+  path. It's added in `project.yml` as a `type: folder` source (a plain
+  group would flatten the three `.mlmodelc` dirs' identically-named internal
+  files — `coremldata.bin`, `model.mil`, etc. — into colliding top-level
+  resources instead of preserving them as real nested folders, which
+  WhisperKit requires at load time). Only `tiny` is bundled (~75MB is a
+  reasonable permanent app-size cost for zero-network language-ID out of the
+  box); `base` (~150MB) stays a Settings-triggered download since most users
+  won't switch to it. The model files themselves are tracked via Git LFS —
+  see the IMPORTANT note above.
 - **Changing the language pair no longer restarts onboarding.**
   `AppState.updateLanguagePair(_:)` (Settings' `LanguagePairEditorView`)
   changes it in place; `AppState.completeOnboarding(with:)` is only for the

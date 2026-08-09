@@ -36,6 +36,21 @@ enum WhisperModelOption: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var modelName: String { rawValue }
 
+    /// Folder name matching WhisperKit's HuggingFace repo layout
+    /// (`argmaxinc/whisperkit-coreml`), for the one model bundled directly
+    /// in the app instead of downloaded on first use — see
+    /// `WhisperModelManager.bundledFolder`. `nil` means "no bundled copy,
+    /// download as usual"; only `.tiny` is bundled (~75MB is a reasonable
+    /// permanent app-size cost for zero-network language-ID out of the
+    /// box, ~150MB for `.base` isn't, and it stays available as an
+    /// optional download from Settings).
+    var bundledResourceName: String? {
+        switch self {
+        case .tiny: return "openai_whisper-tiny"
+        case .base: return nil
+        }
+    }
+
     var displayName: String {
         switch self {
         case .tiny: return "Tiny (~75MB, fastest)"

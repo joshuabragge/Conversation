@@ -36,20 +36,25 @@ backgrounded is a known rough edge — see the background note below.
 
 A manual language chip lets you override a wrong auto-detect guess, and
 gets suggested automatically after a couple of consecutive misses.
-Everything after first-run setup (WhisperKit model download, Translation
-language-pack download) runs fully offline — including relaunching the app
-in airplane mode.
+The default (`tiny`) WhisperKit language-ID model ships inside the app, so
+it needs no network at all; the only first-run network dependency is
+Apple's Translation framework downloading the language pack for whichever
+pair you pick during onboarding. Everything after that runs fully offline —
+including relaunching the app in airplane mode.
 
 ## Requirements
 
 - Xcode 16.2+ (iOS 18.2 SDK)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) — the `.xcodeproj` is generated from `project.yml`, not checked in
+- [Git LFS](https://git-lfs.com) (`brew install git-lfs && git lfs install`) — the bundled WhisperKit `tiny` model (~75MB, see below) is stored via LFS, not as plain git blobs, to keep a normal clone fast
 - iOS 18.0+ deployment target (required by the dynamic `TranslationSession.Configuration` API — 17.4 only has a fixed-pair overload)
 - A real device with headphones for anything beyond a compile check — see [Simulator limitations](#simulator-limitations) below
 
 ## Setup
 
 ```bash
+git lfs install        # once per machine, if you haven't already
+git lfs pull            # fetches the actual model binary — see the warning below
 xcodegen generate
 open Conversation.xcodeproj
 ```
@@ -57,21 +62,28 @@ open Conversation.xcodeproj
 Or from the command line:
 
 ```bash
+git lfs install
+git lfs pull
 xcodegen generate
 xcodebuild -project Conversation.xcodeproj -scheme Conversation \
   -destination 'platform=iOS Simulator,name=iPhone 16' build
 ```
 
-First launch needs network twice, regardless of simulator/device: WhisperKit
-downloads its language-ID model from Hugging Face on first use, and
-Translation downloads the language pack for whichever pair you pick during
-onboarding. Both are cached on-device after that, and reused directly from
-disk on later launches without needing network again (see `CLAUDE.md` for
-why that second part needed an explicit fix). Settings > Language-Detection
-Models lets you trigger the WhisperKit download ahead of time (with a real
-progress bar and a downloaded/not-downloaded indicator per model), so you
-can get both models cached before you actually leave for a walk instead of
-finding out you need one mid-conversation.
+**If Git LFS wasn't installed before you cloned**, `Conversation/Resources/WhisperModels/openai_whisper-tiny/` will contain tiny LFS *pointer* text files instead of the real model — the build will still succeed (they're still files at the right paths), but WhisperKit will fail to load the model at runtime with a confusing Core ML error, not an obviously-missing-file one. Run `git lfs install && git lfs pull` and rebuild if language-ID doesn't work in a fresh checkout.
+
+The WhisperKit `tiny` language-ID model ships inside the app itself (see
+"Why the WhisperKit tiny model is bundled" below), so it needs no network at
+all, even on a fresh install. Translation still downloads its language pack
+for whichever pair you pick during onboarding — that's a one-time,
+Apple-controlled system download with no bundling option — and WhisperKit's
+larger `base` model is an optional download from Settings if you want to
+A/B it, cached after that and reused directly from disk on later launches
+without needing network again (see `CLAUDE.md` for why that used to not be
+true even after the first download). Settings > Language-Detection Models
+lets you trigger the `base` download ahead of time (with a real progress bar
+and a downloaded/not-downloaded indicator per model), so you can get it
+cached before you actually leave for a walk instead of finding out you need
+it mid-conversation.
 
 **Re-run `xcodegen generate` after adding, removing, or renaming any Swift
 file** — the project file is a build artifact of `project.yml` + whatever's
@@ -150,14 +162,17 @@ Conversation/
   model loading to `WhisperModelManager` rather than caching a model folder
   itself.
 - **`WhisperModelManager`** — the single owner of "is this WhisperKit model
-  downloaded, and where." Wraps `WhisperKit.download(variant:progressCallback:)`
-  to expose real fractional download progress (`@Published downloadProgress`/
-  `isDownloading`, keyed by `WhisperModelOption`) and caches the resolved
-  model folder per model name in `UserDefaults` so a later load skips
-  `download()`'s network call entirely. Used both by `LanguageIdentifier`
-  (lazy load on first real use) and Settings' model rows (explicit
-  predownload with a progress bar) — one code path either way, so there's
-  no risk of the two disagreeing about what's actually on disk.
+  available, and where." Checks three places in order: bundled in the app
+  itself (`.tiny` only — see below), then a previously-cached download
+  folder, then falls through to actually downloading via
+  `WhisperKit.download(variant:progressCallback:)`, which exposes real
+  fractional progress (`@Published downloadProgress`/`isDownloading`, keyed
+  by `WhisperModelOption`) and caches the resolved folder per model name in
+  `UserDefaults` so a later load skips the network call entirely. Used both
+  by `LanguageIdentifier` (lazy load on first real use) and Settings' model
+  rows (explicit predownload with a progress bar) — one code path either
+  way, so there's no risk of the two disagreeing about what's actually
+  available.
 - **`SpeechRecognizerWrapper`** — one-shot on-device transcription via
   `SFSpeechURLRecognitionRequest` once the language is known. Polls with a
   bounded timeout rather than trusting `SFSpeechRecognizer`'s own `isFinal`
@@ -193,6 +208,25 @@ own STT — generally more accurate for actual transcription than Whisper's
 tiny model — handles the transcription once the locale is known. This also
 keeps the dependency footprint narrow: only a small (~75–150MB) language-ID
 model is needed, not a full transcription-quality one.
+
+### Why the WhisperKit `tiny` model is bundled, not just downloaded
+
+WhisperKit explicitly supports pointing at a local model folder
+(`WhisperKitConfig(modelFolder:)`) instead of downloading — the same
+parameter `WhisperModelManager` already used to skip re-downloading a
+*cached* model turns out to work just as well pointed at a folder shipped
+inside the app bundle itself, with no download ever happening for it. The
+`tiny` model's compiled Core ML files (~75MB, MIT-licensed, from Argmax's
+`argmaxinc/whisperkit-coreml` on Hugging Face) are added to the Xcode
+project as a folder reference (`project.yml`'s `type: folder` source entry
+— a plain group would flatten and rename-collide the three `.mlmodelc`
+directories' identically-named internal files instead of preserving them as
+real nested folders, which WhisperKit requires) and checked first by
+`WhisperModelManager.bundledFolder`. Only `tiny` — `base` (~150MB) stays an
+optional Settings download, since doubling the app's permanent install size
+for a model most people won't switch to isn't worth it by default. The
+binary model files themselves are tracked via **Git LFS**, not plain git
+blobs — see Setup above.
 
 ### Why background/locked-screen operation needed care, not just an Info.plist entry
 
@@ -307,10 +341,11 @@ real-world verification — see the checklist below.
    one via "Manage voices in Settings" and confirm it shows up without
    relaunching), rate slider has an audible effect, VAD sensitivity presets
    change cutoff timing.
-8. Settings > Language-Detection Models: download a model that isn't cached
-   yet and confirm the progress bar actually moves and the row flips to
+8. Settings > Language-Detection Models: confirm `tiny` shows "Included"
+   with no download button (fresh install, airplane mode is fine). Download
+   `base` and confirm the progress bar actually moves and the row flips to
    "Downloaded"; relaunch (or toggle airplane mode) and confirm it loads
-   from disk with no network needed.
+   from disk with no network needed afterward.
 9. Settings > Languages: change the language pair without going through
    onboarding, including while a conversation is actively running (should
    stop, apply the new pair, and resume) — then use "Refresh available
@@ -332,3 +367,10 @@ that only shows up on a real device.
 [PolyForm Noncommercial 1.0.0](LICENSE.md) — free to use, modify, and share
 for any noncommercial purpose. Commercial use requires a separate
 arrangement with the copyright holder.
+
+The bundled WhisperKit `tiny` model weights
+(`Conversation/Resources/WhisperModels/`) are third-party, MIT-licensed
+Core ML conversions from Argmax's
+[`argmaxinc/whisperkit-coreml`](https://huggingface.co/argmaxinc/whisperkit-coreml),
+derived from OpenAI's (also MIT-licensed) Whisper — not covered by this
+repo's own license above, and not the copyright of this project.

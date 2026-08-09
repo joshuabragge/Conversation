@@ -90,7 +90,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Language-Detection Models")
                 } footer: {
-                    Text("Downloaded once, then used fully offline. Download a model ahead of time here instead of waiting for it to be needed mid-conversation.")
+                    Text("Tiny ships with the app, so language-detection needs no network even on a brand new install. Base is an optional download, cached once and used fully offline after that — download it ahead of time here instead of waiting for it to be needed mid-conversation.")
                 }
 
                 Section {

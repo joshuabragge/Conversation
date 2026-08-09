@@ -16,6 +16,20 @@ targets:
     platform: iOS
     sources:
       - path: Conversation
+        excludes:
+          - "Resources/WhisperModels/openai_whisper-tiny/**"
+      # Added as a separate folder reference (not a group) so Xcode copies
+      # it into the app bundle as one intact directory tree instead of
+      # flattening every .mlmodelc's internal files (coremldata.bin,
+      # model.mil, ...) into colliding top-level resources — WhisperKit
+      # expects a real nested folder structure at load time. Bundling the
+      # tiny model directly means language-ID needs no network even on a
+      # brand new install; see CLAUDE.md/README.md for why only tiny (not
+      # base) is bundled, and WhisperModelManager.bundledFolder for the
+      # runtime side of this.
+      - path: Conversation/Resources/WhisperModels/openai_whisper-tiny
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: WhisperKit
         product: WhisperKit

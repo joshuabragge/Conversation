@@ -38,7 +38,14 @@ struct WhisperModelRowView: View {
 
     @ViewBuilder
     private var statusView: some View {
-        if isDownloading {
+        if manager.isBundled(model) {
+            // Ships inside the app itself — there's nothing to download or
+            // show progress for, so this short-circuits before the
+            // isDownloading/isDownloaded checks below.
+            Label("Included", systemImage: "shippingbox.fill")
+                .labelStyle(.iconOnly)
+                .foregroundStyle(.green)
+        } else if isDownloading {
             ProgressView(value: progress)
                 .frame(width: 90)
         } else if isDownloaded {

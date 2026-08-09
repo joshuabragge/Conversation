@@ -23,6 +23,24 @@ final class WhisperModelManager: ObservableObject {
         "com.joshuabragge.Conversation.whisperModelFolder.\(model.modelName)"
     }
 
+    /// The local folder for `model` if it ships inside the app bundle
+    /// itself, added via `project.yml`'s folder-reference source entry —
+    /// currently just `.tiny`. Checked before anything cache/network
+    /// related, so the default model needs no network at all, even on a
+    /// brand new install (see CLAUDE.md's "WhisperKit needed network on
+    /// every launch" entry for why that used to not be true even after
+    /// the first launch).
+    func bundledFolder(for model: WhisperModelOption) -> String? {
+        guard let resourceName = model.bundledResourceName,
+              let url = Bundle.main.url(forResource: resourceName, withExtension: nil)
+        else { return nil }
+        return url.path
+    }
+
+    func isBundled(_ model: WhisperModelOption) -> Bool {
+        bundledFolder(for: model) != nil
+    }
+
     /// The cached local folder for `model`, if one exists *and* still
     /// actually exists on disk — a stale `UserDefaults` entry pointing at
     /// a folder that's since been deleted (e.g. app reinstall) doesn't count.
@@ -35,7 +53,7 @@ final class WhisperModelManager: ObservableObject {
     }
 
     func isDownloaded(_ model: WhisperModelOption) -> Bool {
-        cachedFolder(for: model) != nil
+        isBundled(model) || cachedFolder(for: model) != nil
     }
 
     /// Forgets a cached folder — used when loading from it fails (stale or
@@ -55,6 +73,10 @@ final class WhisperModelManager: ObservableObject {
     /// callback the convenience initializer doesn't.
     @discardableResult
     func download(_ model: WhisperModelOption) async throws -> String {
+        if let bundled = bundledFolder(for: model) {
+            AppLog.debug(.languageID, "WhisperModelManager: \(model.modelName) is bundled with the app at \(bundled), skipping download")
+            return bundled
+        }
         if let cached = cachedFolder(for: model) {
             AppLog.debug(.languageID, "WhisperModelManager: \(model.modelName) already cached at \(cached)")
             return cached
