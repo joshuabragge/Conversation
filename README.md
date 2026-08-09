@@ -47,6 +47,35 @@ Apple's Translation framework downloading the language pack for whichever
 pair you pick during onboarding. Everything after that runs fully offline —
 including relaunching the app in airplane mode.
 
+Every session with at least one completed exchange is saved automatically,
+accessible from the hamburger button (top left) as a sliding history
+drawer — copy a whole past conversation to the clipboard, copy just a
+subset of turns via a select mode, or delete individual sessions or all of
+them at once.
+
+## Chat history
+
+Tapping the hamburger icon (top left of the main screen) slides in a
+history drawer listing every past session, newest first. A session is
+whatever happened between one tap of Start and the next — it's saved the
+moment it has at least one completed exchange (Start-then-immediately-Stop
+with nothing said isn't kept), and kept up to date turn-by-turn while it's
+still running, not just once you tap Stop, so swiping the app away mid-walk
+doesn't lose it.
+
+- **Swipe a session** in the drawer to copy its whole transcript to the
+  clipboard or delete just that one.
+- **Delete All** (top right of the drawer) clears every saved session, with
+  a confirmation first since it can't be undone.
+- **Tap a session** to open its full transcript. "Copy All" copies the
+  whole conversation; "Select" enters a mode where tapping individual
+  exchanges (each heard/translated pair is one selectable block) toggles a
+  checkmark, and "Copy Selected" copies just those.
+
+History is stored as a JSON file in the app's Application Support
+directory (`ConversationHistoryStore`), not iCloud/synced anywhere — it's
+local to the device.
+
 ## Requirements
 
 - Xcode 16.2+ (iOS 18.2 SDK)
@@ -130,11 +159,12 @@ Conversation/
   Translation/    Apple Translation framework bridge, language-pack checks
   Output/         Text-to-speech
   Conversation/   The central turn state machine
-  Models/         LanguagePair, on-device language-support detection
+  History/        Persisted chat history store
+  Models/         LanguagePair, ChatSession, on-device language-support detection
   Permissions/    Mic + speech-recognition auth
   Config/         Tunable thresholds (several live-editable from Settings), timeout helper
   Logging/        AppLog + in-app Debug Log viewer
-  UI/             Onboarding, Conversation, Settings screens
+  UI/             Onboarding, Conversation, History, Settings screens
 ```
 
 ### Module responsibilities
@@ -196,7 +226,18 @@ Conversation/
   timer (`UIApplication.shared.isIdleTimerDisabled`) for as long as a
   session is running, so the screen doesn't auto-lock mid-walk — see "Why
   the app is foreground-only" below for why that's the mechanism instead of
-  locked-screen operation.
+  locked-screen operation. Persists the running session to
+  `ConversationHistoryStore` after every turn (not just at `stop()`) — see
+  below.
+- **`ConversationHistoryStore`** — the single owner of persisted chat
+  history, one JSON file in Application Support rather than UserDefaults
+  (meant to grow across many walks, unlike the small settings values
+  UserDefaults already backs elsewhere). `ConversationLoopController` calls
+  `upsert(_:)` after every completed turn, keyed by a session ID generated
+  in `start()`, so a session is saved incrementally as it happens rather
+  than only once at `stop()` — swiping the app away mid-walk instead of
+  tapping Stop is a normal way to end a session for this kind of app, not
+  an edge case to shrug off.
 - **`AppLog`/`LogStore`** — every module logs its state transitions and
   failures through this, mirrored to both Xcode's console and an in-app
   viewer (Settings > Debug Log, or a link on the Welcome screen). This is
@@ -381,6 +422,14 @@ the checklist below.
    stop, apply the new pair, and resume) — then use "Refresh available
    languages" after enabling a new dictation language in system Settings and
    confirm it shows up without relaunching the app.
+10. Chat history: complete a few turns, open the hamburger drawer, and
+    confirm the session appears immediately (not just after tapping Stop).
+    Force-quit the app mid-session (not Stop) and relaunch — confirm the
+    turns up to the last completed one are still there. Swipe a session to
+    copy and to delete; use Delete All and confirm the confirmation dialog
+    actually blocks an accidental tap. Open a session, use Select mode to
+    pick a subset of turns, Copy Selected, and paste somewhere to confirm
+    it's only those turns, not the whole conversation.
 
 ## Debugging
 

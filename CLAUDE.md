@@ -121,6 +121,19 @@ root-caused from a real log, not from reasoning about the code alone.
   changes it in place; `AppState.completeOnboarding(with:)` is only for the
   first-run path. See the `@StateObject`/`.onChange(of: pair)` gotcha below
   for why `ConversationView` needs explicit handling of this.
+- **Chat history is persisted turn-by-turn, not once at `stop()`.**
+  `ConversationLoopController.persistCurrentSession()` calls
+  `ConversationHistoryStore.shared.upsert(_:)` right after every
+  `history.append(...)`, keyed by a session ID generated in `start()`. This
+  is deliberate, not just "call it wherever's convenient": for a hands-free
+  walking app, swiping the app away mid-walk instead of tapping Stop is a
+  completely normal way a session ends, and only persisting at `stop()`
+  would silently lose everything since the last one. `ConversationTurn`
+  reuses `LanguagePair`'s pattern for `Locale.Language` (not stably
+  `Codable` across OS versions — encode/decode via `minimalIdentifier`
+  strings instead) — if a future model adds another `Locale.Language`
+  field, follow the same pattern rather than trying default `Codable`
+  synthesis on it directly.
 
 ## Non-obvious bugs already found once — don't reintroduce them
 

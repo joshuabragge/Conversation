@@ -28,8 +28,10 @@ final class ConversationLoopController: ObservableObject {
     @Published private(set) var heardText: String = ""
     @Published private(set) var heardLanguage: Locale.Language?
     @Published private(set) var translatedText: String = ""
-    /// In-memory only, cleared each time a session starts — v1 is
-    /// explicitly the live conversation loop, not a persisted history.
+    /// The current run's scrollback — cleared on every `start()`. Also
+    /// mirrored to `ConversationHistoryStore` turn-by-turn via
+    /// `persistCurrentSession()`, so clearing this in-memory copy on the
+    /// next `start()` doesn't lose it; it just moves it into history.
     @Published private(set) var history: [ConversationTurn] = []
     /// `nil` = auto-detect (default). Set by the UI's manual language chip.
     @Published var manualOverride: Locale.Language?
@@ -62,6 +64,11 @@ final class ConversationLoopController: ObservableObject {
     /// just saying "try again," since heavy tiny-model tuning means
     /// repeated misses are expected, not exceptional.
     private var consecutiveRejects = 0
+    /// Identifies the current run for `ConversationHistoryStore` — reset on
+    /// every `start()` so a fresh walk becomes its own saved session
+    /// instead of appending to whatever was last recorded.
+    private var currentSessionID = UUID()
+    private var sessionStartedAt = Date()
 
     init(audioSession: AudioSessionManager, languagePair: LanguagePair) {
         self.audioSession = audioSession
@@ -110,6 +117,8 @@ final class ConversationLoopController: ObservableObject {
         heardText = ""
         translatedText = ""
         heardLanguage = nil
+        currentSessionID = UUID()
+        sessionStartedAt = Date()
         vad.reset()
         do {
             try audioSession.activateListening()
@@ -152,6 +161,17 @@ final class ConversationLoopController: ObservableObject {
     /// immediately, same as any other app.
     private func updateIdleTimer() {
         UIApplication.shared.isIdleTimerDisabled = state != .idle
+    }
+
+    /// Saves (or updates) the current run in `ConversationHistoryStore`,
+    /// called after every completed turn rather than just once at `stop()`
+    /// — see the store's doc comment for why (swiping the app away
+    /// mid-walk is a normal way to end a session, not an edge case).
+    private func persistCurrentSession() {
+        ConversationHistoryStore.shared.upsert(ChatSession(
+            id: currentSessionID, startedAt: sessionStartedAt,
+            languagePair: languagePair, turns: history
+        ))
     }
 
     // MARK: - VAD-driven turn boundaries
@@ -339,6 +359,7 @@ final class ConversationLoopController: ObservableObject {
                 heardText: text, heardLanguage: spokenLanguage,
                 translatedText: translated, translatedLanguage: targetLanguage
             ))
+            persistCurrentSession()
 
             state = .speaking
             // Must fully release the input route before switching category

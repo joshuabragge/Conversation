@@ -11,6 +11,7 @@ enum LogCategory: String, CaseIterable {
     case speechOutput = "SpeechOutput"
     case conversation = "Conversation"
     case onboarding = "Onboarding"
+    case history = "History"
 }
 
 enum LogLevel: String {
