@@ -2,17 +2,38 @@ import AVFoundation
 
 enum SpeechOutputError: LocalizedError {
     case noVoiceAvailable(Locale.Language)
+    case synthesisFailed
 
     var errorDescription: String? {
         switch self {
         case .noVoiceAvailable(let language):
             return "No voice installed for \(language.displayName) — add one in Settings > Accessibility > Spoken Content > Voices."
+        case .synthesisFailed:
+            return "Couldn't synthesize speech."
         }
     }
 }
 
 /// Wraps `AVSpeechSynthesizer` for per-locale text-to-speech output, with
 /// a user-configurable rate and per-language voice override for Settings.
+///
+/// **Does not use `AVSpeechSynthesizer.speak()`'s live playback.** A real
+/// device report: TTS produced no audio at all with the screen locked or
+/// another app foregrounded, even after `AudioSessionManager` was fixed to
+/// stay in a `.playAndRecord`-compatible category in that case — ruling out
+/// audio-session category as the cause, since mic capture and
+/// `AVAudioPlayer`-based earcons both kept working under the exact same
+/// conditions. That isolates the problem to `AVSpeechSynthesizer`'s live
+/// output path specifically being unreliable while backgrounded, a
+/// limitation documented informally by other developers, not something an
+/// audio session config can fix.
+///
+/// Workaround: render speech to a file via `write(_:toBufferCallback:)`
+/// (which doesn't go through the live playback path) and play that file
+/// back with `AVAudioPlayer` — the same mechanism already confirmed to
+/// work in the background for earcons. Unverified whether this fully
+/// solves it without a device retest, but it's the standard documented
+/// workaround for this exact class of problem.
 @MainActor
 final class SpeechOutputService: NSObject, ObservableObject {
     @Published private(set) var isSpeaking = false
@@ -25,12 +46,8 @@ final class SpeechOutputService: NSObject, ObservableObject {
     @Published var voiceOverrides: [String: String] = [:]
 
     private let synthesizer = AVSpeechSynthesizer()
-    private var continuation: CheckedContinuation<Void, Never>?
-
-    override init() {
-        super.init()
-        synthesizer.delegate = self
-    }
+    private var player: AVAudioPlayer?
+    private var playbackContinuation: CheckedContinuation<Void, Never>?
 
     /// True if at least one installed voice exists for `language`. There is
     /// no programmatic way to install a missing voice — callers should
@@ -84,16 +101,73 @@ final class SpeechOutputService: NSObject, ObservableObject {
         utterance.rate = rate
 
         isSpeaking = true
+        defer { isSpeaking = false }
         let start = Date()
-        await withCheckedContinuation { continuation in
-            self.continuation = continuation
-            synthesizer.speak(utterance)
-        }
+
+        let fileURL = try await synthesizeToFile(utterance)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        AppLog.debug(.speechOutput, "speak: synthesized to \(fileURL.lastPathComponent) in \(Date().timeIntervalSince(start))s, playing back")
+        try await playFile(at: fileURL)
+
         AppLog.info(.speechOutput, "speak: finished after \(Date().timeIntervalSince(start))s")
     }
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
+        player?.stop()
+        playbackContinuation?.resume()
+        playbackContinuation = nil
+    }
+
+    /// Renders `utterance` to a temp audio file via
+    /// `AVSpeechSynthesizer.write(_:toBufferCallback:)` rather than
+    /// `speak()`'s live playback — see the type's doc comment for why.
+    /// The final callback from `write` delivers a zero-length buffer to
+    /// signal completion (documented Apple behavior).
+    private func synthesizeToFile(_ utterance: AVSpeechUtterance) async throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("caf")
+
+        return try await withCheckedThrowingContinuation { continuation in
+            var audioFile: AVAudioFile?
+            var resumed = false
+            let finish: (Result<URL, Error>) -> Void = { result in
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(with: result)
+            }
+
+            synthesizer.write(utterance) { buffer in
+                guard let pcmBuffer = buffer as? AVAudioPCMBuffer else {
+                    finish(.failure(SpeechOutputError.synthesisFailed))
+                    return
+                }
+                if pcmBuffer.frameLength == 0 {
+                    // End-of-synthesis marker.
+                    finish(audioFile != nil ? .success(url) : .failure(SpeechOutputError.synthesisFailed))
+                    return
+                }
+                do {
+                    if audioFile == nil {
+                        audioFile = try AVAudioFile(forWriting: url, settings: pcmBuffer.format.settings)
+                    }
+                    try audioFile?.write(from: pcmBuffer)
+                } catch {
+                    finish(.failure(error))
+                }
+            }
+        }
+    }
+
+    private func playFile(at url: URL) async throws {
+        let newPlayer = try AVAudioPlayer(contentsOf: url)
+        newPlayer.delegate = self
+        player = newPlayer
+        await withCheckedContinuation { continuation in
+            playbackContinuation = continuation
+            newPlayer.play()
+        }
     }
 }
 
@@ -111,20 +185,19 @@ extension AVSpeechSynthesisVoice {
     }
 }
 
-extension SpeechOutputService: AVSpeechSynthesizerDelegate {
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+extension SpeechOutputService: AVAudioPlayerDelegate {
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         Task { @MainActor in
-            isSpeaking = false
-            continuation?.resume()
-            continuation = nil
+            playbackContinuation?.resume()
+            playbackContinuation = nil
         }
     }
 
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
         Task { @MainActor in
-            isSpeaking = false
-            continuation?.resume()
-            continuation = nil
+            AppLog.error(.speechOutput, "playFile: decode error: \(error?.localizedDescription ?? "unknown")")
+            playbackContinuation?.resume()
+            playbackContinuation = nil
         }
     }
 }

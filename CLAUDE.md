@@ -90,21 +90,25 @@ capture, not from code review.
   with a cryptic OSStatus error, not a missing-voice problem. Fixed in
   `ConversationLoopController.process`: `mic.stopEngine()` before
   `activateSpeaking()`, `mic.restartEngine()` after `activateListening()`.
-- **TTS was silent with the screen locked, even though mic capture and
-  earcons both worked.** Isolated via which audio worked and which didn't:
-  earcons (via `AVAudioPlayer`) play during the Listening config
-  (`.playAndRecord`) and were audible locked; TTS only plays after
-  switching to the Speaking config (`.playback`) and was not — pointing at
-  the `.playAndRecord` → `.playback` category transition specifically
-  while already backgrounded, not at background audio in general.
-  `AudioSessionManager.activateSpeaking()` now checks
-  `UIApplication.shared.applicationState` and stays in a
-  `.playAndRecord`-compatible category when backgrounded, skipping the
-  switch (and its Bluetooth HFP→A2DP quality optimization) rather than
-  risk the transition again. Root cause of *why* the transition itself
-  fails in background isn't fully confirmed — if background audio issues
-  resurface, check whether they cluster around session category
-  *transitions* specifically happening while backgrounded, same pattern.
+- **TTS was silent whenever the app wasn't in the foreground (locked
+  screen, another app active), even though mic capture and earcons both
+  worked, and even after avoiding the `.playAndRecord`→`.playback`
+  category switch in that case.** That second fact ruled out audio-session
+  category as the cause entirely: mic capture and `AVAudioPlayer`-based
+  earcons kept working under the identical session config that produced
+  silent TTS. What's actually different is the *playback mechanism* —
+  `AVSpeechSynthesizer.speak()`'s live output path is unreliable while
+  backgrounded, a limitation of that specific API, not something an audio
+  session config can fix (informally documented by other developers
+  hitting the same thing). Fixed in `SpeechOutputService` by not using
+  `speak()` at all: `AVSpeechSynthesizer.write(_:toBufferCallback:)`
+  renders the utterance to a temp file instead (a different, non-live code
+  path), and that file is played back with `AVAudioPlayer` — the same
+  mechanism already confirmed working in the background for earcons. The
+  `.playback`-vs-`.playAndRecord` foreground/background branching in
+  `AudioSessionManager.activateSpeaking()` is still worth keeping for its
+  original Bluetooth-quality reason (that's a route/category property, not
+  tied to which playback API is used) — just wasn't the fix for *this* bug.
 - Earcons must play through `AVAudioPlayer`/the app's own `AVAudioSession`,
   not `AudioServicesPlaySystemSound` — the latter is silenced by the
   physical ring/silent switch; audio routed through the app's session
