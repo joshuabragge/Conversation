@@ -9,6 +9,7 @@ struct SettingsView: View {
     // `$controller.speechOutput.rate` can't form a binding through it —
     // observe the same instance directly here instead.
     @ObservedObject private var speechOutput: SpeechOutputService
+    @ObservedObject private var modelManager = WhisperModelManager.shared
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -41,7 +42,16 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("Languages") {
-                    LanguagePairEditView()
+                    NavigationLink {
+                        LanguagePairEditorView()
+                    } label: {
+                        HStack {
+                            Text("Languages")
+                            Spacer()
+                            Text("\(pair.first.displayName) ⇄ \(pair.second.displayName)")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
 
                 Section("Voices") {
@@ -74,6 +84,16 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    ForEach(WhisperModelOption.allCases) { option in
+                        WhisperModelRowView(model: option, manager: modelManager)
+                    }
+                } header: {
+                    Text("Language-Detection Models")
+                } footer: {
+                    Text("Downloaded once, then used fully offline. Download a model ahead of time here instead of waiting for it to be needed mid-conversation.")
+                }
+
+                Section {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Language-detection sensitivity: \(Int(languageIDRejectThreshold * 100))%")
                         Slider(value: $languageIDRejectThreshold, in: 0.5...0.9, step: 0.05)
@@ -89,7 +109,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Advanced (Experimental)")
                 } footer: {
-                    Text("These affect how reliably Conversation tells your two languages apart. A bigger model is likely more accurate but slower and bigger to download — worth A/B testing. Model changes take effect the next time the app loads it (e.g. next launch), not immediately.")
+                    Text("These affect how reliably Conversation tells your two languages apart. A bigger model is likely more accurate but slower and bigger to download — worth A/B testing. Model changes take effect the next time the app loads it (e.g. next launch), not immediately — download it above ahead of time so the switch is instant.")
                 }
 
                 Section("Debugging") {

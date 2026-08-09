@@ -1,9 +1,8 @@
 import Foundation
 
-/// Top-level navigation: onboarding (first run, or re-entered from
-/// Settings to change languages) vs. the main conversation screen.
-/// Persists only the chosen language pair — no history/vocab data, per v1
-/// scope.
+/// Top-level navigation: onboarding (first run only) vs. the main
+/// conversation screen. Persists only the chosen language pair — no
+/// history/vocab data, per v1 scope.
 @MainActor
 final class AppState: ObservableObject {
     enum Screen {
@@ -30,18 +29,23 @@ final class AppState: ObservableObject {
 
     func completeOnboarding(with pair: LanguagePair) {
         AppLog.info(.onboarding, "completeOnboarding: \(pair.first.minimalIdentifier)/\(pair.second.minimalIdentifier)")
+        persist(pair)
+        screen = .conversation
+    }
+
+    /// Changes the active pair in place from Settings — no onboarding
+    /// restart, no re-requesting permissions that are already granted.
+    /// `ConversationView` observes `languagePair` and pushes the change
+    /// into the live `ConversationLoopController` itself.
+    func updateLanguagePair(_ pair: LanguagePair) {
+        AppLog.info(.onboarding, "updateLanguagePair: \(pair.first.minimalIdentifier)/\(pair.second.minimalIdentifier)")
+        persist(pair)
+    }
+
+    private func persist(_ pair: LanguagePair) {
         languagePair = pair
         if let data = try? JSONEncoder().encode(pair) {
             UserDefaults.standard.set(data, forKey: Self.languagePairKey)
         }
-        screen = .conversation
-    }
-
-    /// Re-enters onboarding's language step (from Settings) without
-    /// forgetting the previous pair unless the user actually finishes
-    /// picking a new one.
-    func changeLanguagePair() {
-        AppLog.info(.onboarding, "changeLanguagePair: returning to onboarding")
-        screen = .onboarding
     }
 }

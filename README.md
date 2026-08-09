@@ -10,8 +10,9 @@ headphone mic, and Google's needs network and handles headphone audio
 routing poorly. This app is narrower and more specific: pick two languages
 once, then just talk — in either language, in any order — and hear the
 translation spoken back through your headphones, with no button presses and
-no network once initial setup is done. It keeps listening and translating
-with the screen locked, so it stays out of your way on an actual walk.
+no network once initial setup is done. Listening, language-ID, transcription,
+and translation all keep running with the screen locked; spoken output while
+backgrounded is a known rough edge — see the background note below.
 
 ## How it works
 
@@ -66,7 +67,11 @@ downloads its language-ID model from Hugging Face on first use, and
 Translation downloads the language pack for whichever pair you pick during
 onboarding. Both are cached on-device after that, and reused directly from
 disk on later launches without needing network again (see `CLAUDE.md` for
-why that second part needed an explicit fix).
+why that second part needed an explicit fix). Settings > Language-Detection
+Models lets you trigger the WhisperKit download ahead of time (with a real
+progress bar and a downloaded/not-downloaded indicator per model), so you
+can get both models cached before you actually leave for a walk instead of
+finding out you need one mid-conversation.
 
 **Re-run `xcodegen generate` after adding, removing, or renaming any Swift
 file** — the project file is a build artifact of `project.yml` + whatever's
@@ -141,9 +146,18 @@ Conversation/
   pass (note: that's the framework's actual, misspelled, public API name)
   per turn, renormalized across just the two chosen languages via softmax
   over their raw log-probabilities — not WhisperKit's full ~100-language
-  distribution, since a binary choice is all that matters here. Also
-  caches its resolved model folder so later launches load straight from
-  disk instead of requiring network.
+  distribution, since a binary choice is all that matters here. Delegates
+  model loading to `WhisperModelManager` rather than caching a model folder
+  itself.
+- **`WhisperModelManager`** — the single owner of "is this WhisperKit model
+  downloaded, and where." Wraps `WhisperKit.download(variant:progressCallback:)`
+  to expose real fractional download progress (`@Published downloadProgress`/
+  `isDownloading`, keyed by `WhisperModelOption`) and caches the resolved
+  model folder per model name in `UserDefaults` so a later load skips
+  `download()`'s network call entirely. Used both by `LanguageIdentifier`
+  (lazy load on first real use) and Settings' model rows (explicit
+  predownload with a progress bar) — one code path either way, so there's
+  no risk of the two disagreeing about what's actually on disk.
 - **`SpeechRecognizerWrapper`** — one-shot on-device transcription via
   `SFSpeechURLRecognitionRequest` once the language is known. Polls with a
   bounded timeout rather than trusting `SFSpeechRecognizer`'s own `isFinal`
@@ -184,14 +198,23 @@ model is needed, not a full transcription-quality one.
 
 `UIBackgroundModes: audio` is the standard mechanism that lets an active
 `AVAudioSession` (and therefore the mic, WhisperKit, Translation, and TTS)
-keep running with the screen locked. But `AudioSessionManager`'s
-Listening→Speaking category switch (`.playAndRecord` → `.playback`) turned
-out to silence `AVSpeechSynthesizer` output specifically while already
-backgrounded, even though mic capture and earcons (a different playback
-path) both kept working fine locked. `activateSpeaking()` now stays in a
-`.playAndRecord`-compatible category when backgrounded instead of making
-that switch — trading away the Bluetooth quality optimization for actually
-being audible while locked. See `CLAUDE.md` for the full isolation story.
+keep running with the screen locked, and it does: mic capture, language-ID,
+transcription, translation, and earcon playback are all confirmed working
+locked. **Spoken output specifically (`AVSpeechSynthesizer`) is not** —
+it goes silent while backgrounded regardless of audio session category, a
+long-standing, still-unresolved issue reported by other developers against
+this exact framework going back to iOS 13, not something specific to this
+app's setup. Two targeted fixes (keeping `.playAndRecord` instead of
+switching to `.playback` while backgrounded; rendering to a file played
+back via `AVAudioPlayer` instead of `speak()`'s live output) both failed to
+resolve it on real-device testing. Current state: a documented community
+workaround (`SpeechOutputService.startKeepAliveTone`, a second unrelated
+`AVAudioPlayer` tone playing concurrently during synthesis) is applied but
+not yet confirmed to work, and a 15s timeout wraps every `speak()` call
+regardless (`RecognitionConfig.speechOutputTimeout`) so a stuck synthesis
+can't wedge the hands-free loop. If the workaround doesn't pan out, the
+plan is to scope spoken output to foreground-only rather than keep chasing
+a platform bug. See `CLAUDE.md` for the full isolation story.
 
 ## Current status
 
@@ -218,11 +241,12 @@ full, still-growing list with root causes.
 - [ ] M9 — Hardening: device/firmware matrix, battery/thermal, accessibility, App Store prep
 
 The core loop (listen → identify → transcribe → translate → speak → back to
-listening) has been confirmed working end-to-end on a real device, with
-both the `tiny` and `base` WhisperKit models. Background/locked-screen
-operation, extended-session battery/thermal behavior, and outdoor VAD
-performance (wind, traffic) are the main things still needing real-world
-verification — see the checklist below.
+listening) has been confirmed working end-to-end on a real device in the
+foreground, with both the `tiny` and `base` WhisperKit models. Spoken output
+while backgrounded/locked is currently unreliable (see the background note
+above) and is being actively tested; extended-session battery/thermal
+behavior and outdoor VAD performance (wind, traffic) are also still needing
+real-world verification — see the checklist below.
 
 ## Known simplifications / open risks
 
@@ -252,11 +276,14 @@ verification — see the checklist below.
 - Real Bluetooth HFP↔A2DP switching latency/glitches between turns haven't
   been formally measured, though nothing in testing so far has flagged it
   as a problem.
-- **Background/locked-screen operation** works for the core loop (mic,
-  language-ID, transcription, translation, TTS all confirmed audible with
-  the screen locked), but extended-session behavior — memory pressure,
-  CoreML inference speed while backgrounded over a long walk, and battery
-  drain — is still unverified.
+- **Background/locked-screen operation** works for everything except spoken
+  output: mic, language-ID, transcription, and translation are all confirmed
+  running with the screen locked, but `AVSpeechSynthesizer` output is
+  currently unreliable while backgrounded (see the background note above) —
+  under active investigation, with foreground-only spoken output as the
+  fallback plan if the current workaround doesn't hold up. Extended-session
+  behavior — memory pressure, CoreML inference speed while backgrounded over
+  a long walk, and battery drain — is also still unverified.
 
 ## Manual test checklist
 
@@ -280,6 +307,15 @@ verification — see the checklist below.
    one via "Manage voices in Settings" and confirm it shows up without
    relaunching), rate slider has an audible effect, VAD sensitivity presets
    change cutoff timing.
+8. Settings > Language-Detection Models: download a model that isn't cached
+   yet and confirm the progress bar actually moves and the row flips to
+   "Downloaded"; relaunch (or toggle airplane mode) and confirm it loads
+   from disk with no network needed.
+9. Settings > Languages: change the language pair without going through
+   onboarding, including while a conversation is actively running (should
+   stop, apply the new pair, and resume) — then use "Refresh available
+   languages" after enabling a new dictation language in system Settings and
+   confirm it shows up without relaunching the app.
 
 ## Debugging
 

@@ -52,45 +52,21 @@ final class LanguageIdentifier: ObservableObject {
     /// `RecognitionConfig.whisperModel`'s doc comment).
     private var loadedModelName: String?
 
-    private static func cachedModelFolderKey(for modelName: String) -> String {
-        "com.joshuabragge.Conversation.whisperModelFolder.\(modelName)"
-    }
-
-    /// Loads the configured model once. Downloads from Hugging Face the
-    /// first time (needs network, like the Translation framework's
-    /// one-time language-pack download) and is cached on-device after —
-    /// consistent with the app's "offline after initial setup" promise.
+    /// Loads the configured model once, via the shared `WhisperModelManager`
+    /// (downloads if not already cached — see its doc comment for why a
+    /// cached local folder has to be passed to `WhisperKit` explicitly
+    /// rather than left to resolve on its own).
     ///
-    /// **This didn't actually hold before**: read into WhisperKit's own
-    /// source and found that its default resolution path (used whenever
-    /// `modelFolder` isn't explicitly supplied, which is what this method
-    /// used to do every time) unconditionally calls the Hugging Face Hub
-    /// API to list filenames *before* ever touching a local cache — on
-    /// every single app launch, not just the first. That's a real,
-    /// confirmed bug behind "worked online, broke offline on relaunch,
-    /// even for the model that was already working": the model files
-    /// were genuinely cached, but the network call to look them up
-    /// wasn't skippable without explicitly pointing at that cache.
-    ///
-    /// Fix: after a successful load, the resolved `WhisperKit.modelFolder`
-    /// is saved (per model name, since tiny/base cache to different
-    /// folders). Next time, if that folder still exists on disk, it's
-    /// passed back in as `modelFolder`, which makes WhisperKit skip
-    /// `download()` (and its network call) entirely. Falls back to the
-    /// normal network-resolving path if the cached folder is missing or
-    /// fails to load (stale/corrupt), so a bad cache entry can't
-    /// permanently break loading once network is available again.
-    ///
-    /// Called eagerly during onboarding's asset-check step (`prewarm()`)
-    /// rather than left purely lazy: leaving it to the first real
-    /// conversation turn meant a slow/stuck first-time download showed up
-    /// as "Identifying language…" hanging mid-conversation with no
-    /// progress indicator, instead of a clearly-labeled one-time setup
-    /// step. `identify(fileURL:candidates:)` still calls this too, as a
-    /// fallback for whenever onboarding's prewarm didn't happen or didn't
-    /// finish (e.g. the user backgrounded the app during it).
+    /// Called eagerly during onboarding's asset-check step and from
+    /// Settings' model-management section (`prewarm()`), rather than left
+    /// purely lazy: leaving it to the first real conversation turn meant a
+    /// slow/stuck first-time download showed up as "Identifying
+    /// language…" hanging mid-conversation with no progress indicator.
+    /// `identify(fileURL:candidates:)` still calls this too, as a fallback
+    /// for whenever that priming didn't happen or didn't finish.
     private func loadedWhisperKit() async throws -> WhisperKit {
-        let modelName = RecognitionConfig.whisperModel.modelName
+        let modelOption = RecognitionConfig.whisperModel
+        let modelName = modelOption.modelName
         if let whisperKit, loadedModelName == modelName {
             AppLog.debug(.languageID, "loadedWhisperKit: already loaded (\(modelName)), reusing")
             return whisperKit
@@ -98,47 +74,27 @@ final class LanguageIdentifier: ObservableObject {
         isLoadingModel = true
         defer { isLoadingModel = false }
 
-        let cacheKey = Self.cachedModelFolderKey(for: modelName)
-        let cachedPath = UserDefaults.standard.string(forKey: cacheKey)
-        let cachedFolderExists = cachedPath.map { FileManager.default.fileExists(atPath: $0) } ?? false
-        AppLog.info(.languageID, "loadedWhisperKit: loading '\(modelName)' (cached local folder \(cachedFolderExists ? "found: \(cachedPath!)" : "not found — will need network"))")
-
         let start = Date()
         do {
-            let kit = try await WhisperKit(WhisperKitConfig(
-                model: modelName,
-                modelFolder: cachedFolderExists ? cachedPath : nil,
-                verbose: false, logLevel: .none
-            ))
-            cacheModelFolder(from: kit, key: cacheKey)
+            let folder = try await WhisperModelManager.shared.download(modelOption)
+            let kit = try await WhisperKit(WhisperKitConfig(model: modelName, modelFolder: folder, verbose: false, logLevel: .none))
             whisperKit = kit
             loadedModelName = modelName
-            AppLog.info(.languageID, "loadedWhisperKit: ready in \(Date().timeIntervalSince(start))s (usedCachedFolder=\(cachedFolderExists))")
+            AppLog.info(.languageID, "loadedWhisperKit: ready in \(Date().timeIntervalSince(start))s")
             return kit
         } catch {
-            guard cachedFolderExists else {
-                AppLog.error(.languageID, "loadedWhisperKit: failed after \(Date().timeIntervalSince(start))s: \(error.localizedDescription)")
-                throw error
-            }
-            // Cached folder was stale/corrupt (e.g. partial download) —
-            // forget it and fall back to normal resolution once, so a bad
-            // entry doesn't permanently block loading when network *is*
-            // available.
-            AppLog.error(.languageID, "loadedWhisperKit: cached local folder failed to load (\(error.localizedDescription)), retrying via normal resolution")
-            UserDefaults.standard.removeObject(forKey: cacheKey)
-            let kit = try await WhisperKit(WhisperKitConfig(model: modelName, verbose: false, logLevel: .none))
-            cacheModelFolder(from: kit, key: cacheKey)
+            // Cached folder may have been stale/corrupt — forget it and
+            // retry once via a fresh download, so a bad cache entry can't
+            // permanently block loading once network is available again.
+            AppLog.error(.languageID, "loadedWhisperKit: failed (\(error.localizedDescription)), invalidating cache and retrying once")
+            WhisperModelManager.shared.invalidateCache(for: modelOption)
+            let folder = try await WhisperModelManager.shared.download(modelOption)
+            let kit = try await WhisperKit(WhisperKitConfig(model: modelName, modelFolder: folder, verbose: false, logLevel: .none))
             whisperKit = kit
             loadedModelName = modelName
-            AppLog.info(.languageID, "loadedWhisperKit: ready in \(Date().timeIntervalSince(start))s (after cache-fallback retry)")
+            AppLog.info(.languageID, "loadedWhisperKit: ready in \(Date().timeIntervalSince(start))s (after cache-invalidation retry)")
             return kit
         }
-    }
-
-    private func cacheModelFolder(from kit: WhisperKit, key: String) {
-        guard let resolvedFolder = kit.modelFolder?.path else { return }
-        UserDefaults.standard.set(resolvedFolder, forKey: key)
-        AppLog.debug(.languageID, "loadedWhisperKit: saved local folder for offline reuse: \(resolvedFolder)")
     }
 
     /// Triggers the model download/load ahead of time, so onboarding can

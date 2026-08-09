@@ -3,8 +3,10 @@
 A hands-free iOS translation app for practicing a language solo, on a walk,
 with headphones: speak either of two chosen languages, it detects which one,
 translates it, and speaks the result back through the headphones — on-device
-after first-run setup, including with the screen locked. See `README.md`
-for the full pitch and architecture.
+after first-run setup. Listening/identification/transcription/translation
+all keep running with the screen locked; spoken output while backgrounded is
+a known unresolved rough edge (see the Background section below). See
+`README.md` for the full pitch and architecture.
 
 ## Commands
 
@@ -67,6 +69,20 @@ root-caused from a real log, not from reasoning about the code alone.
   Settings can expose them as live experiment knobs. Real tuning needs real
   device iteration — don't "fix" these back to hardcoded values without a
   reason.
+- **`WhisperModelManager` is the single owner of WhisperKit model
+  download/cache state.** `LanguageIdentifier` (lazy, on first real use) and
+  Settings' `WhisperModelRowView` (explicit predownload with a progress bar)
+  both go through it rather than each keeping their own
+  downloaded/not-downloaded bookkeeping — two independent caches for the
+  same on-disk fact would drift (e.g. Settings shows "not downloaded" right
+  after a conversation turn silently triggered a download). If you need to
+  know whether a model is on disk, or want to trigger its download, go
+  through `WhisperModelManager.shared`, not a new UserDefaults key.
+- **Changing the language pair no longer restarts onboarding.**
+  `AppState.updateLanguagePair(_:)` (Settings' `LanguagePairEditorView`)
+  changes it in place; `AppState.completeOnboarding(with:)` is only for the
+  first-run path. See the `@StateObject`/`.onChange(of: pair)` gotcha below
+  for why `ConversationView` needs explicit handling of this.
 
 ## Non-obvious bugs already found once — don't reintroduce them
 
@@ -244,6 +260,21 @@ capture, not from code review.
   bumping a `.id()` refresh token off `scenePhase` becoming `.active`. If a
   picker/list ever looks stale after the user does something in system
   Settings and comes back, this is probably why.
+- **A `@StateObject` survives a parent's re-render even when the value that
+  constructed it changes.** `ConversationView(pair:)` used to be the only
+  way to change the active language pair — the whole view (and its
+  `ConversationLoopController` `@StateObject`) got torn down and rebuilt via
+  a full onboarding restart, so the controller was always freshly
+  constructed with the current pair. Once Settings' `LanguagePairEditorView`
+  started updating `AppState.languagePair` in place (no more restart), the
+  same `ConversationView` instance stuck around with the *same* controller,
+  which does not automatically notice its constructor argument would now be
+  different — it keeps using whatever pair it was originally built with.
+  Fixed with an explicit `.onChange(of: pair)` in `ConversationView` that
+  calls `controller.updateLanguagePair(newPair)` (stopping and restarting
+  the loop around it if it was running). Any other `@StateObject` built from
+  a `let` property in `init` has the same latent gap if that property can
+  now change out from under an already-alive view.
 
 ## Logging
 

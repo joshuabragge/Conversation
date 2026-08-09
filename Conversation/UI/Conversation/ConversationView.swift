@@ -85,6 +85,21 @@ struct ConversationView: View {
             .onAppear {
                 controller.configure(translationService: translationService)
             }
+            .onChange(of: pair) { _, newPair in
+                // `pair` can now change without this whole view being torn
+                // down and recreated — Settings' LanguagePairEditorView
+                // updates AppState.languagePair in place (no more full
+                // onboarding restart), and SwiftUI preserves this view's
+                // @StateObject-backed controller across that re-render
+                // since its identity doesn't change. Push the new pair
+                // into the live controller explicitly, or it'd keep using
+                // whichever pair it was originally constructed with.
+                AppLog.info(.conversation, "ConversationView: language pair changed to \(newPair.first.minimalIdentifier)/\(newPair.second.minimalIdentifier)")
+                let wasRunning = controller.state != .idle
+                if wasRunning { controller.stop() }
+                controller.updateLanguagePair(newPair)
+                if wasRunning { controller.start() }
+            }
         }
     }
 }
