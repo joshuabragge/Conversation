@@ -70,6 +70,22 @@ final class VADSegmenter: TurnSegmentationSource {
         config.trailingSilenceDuration = duration
     }
 
+    /// Lets Settings' noise-rejection slider (`RecognitionConfig.vadSpeechThreshold`)
+    /// take effect live — the direct lever for loud non-speech noise
+    /// (traffic, wind, a dog bark) opening a turn: raising this means only
+    /// louder-relative-to-background sounds count as "speech".
+    func updateSpeechThreshold(_ threshold: Float) {
+        config.speechThreshold = threshold
+    }
+
+    /// Lets Settings' `RecognitionConfig.vadMinSpeechDuration` slider take
+    /// effect live — raising this filters out brief loud transients (a
+    /// clap, a door slam) that spike above `speechThreshold` but don't
+    /// sustain the way speech does.
+    func updateMinSpeechDuration(_ duration: TimeInterval) {
+        config.minSpeechDuration = duration
+    }
+
     /// Call before starting a fresh listening session.
     func reset() {
         state = .silence

@@ -47,6 +47,13 @@ Apple's Translation framework downloading the language pack for whichever
 pair you pick during onboarding. Everything after that runs fully offline —
 including relaunching the app in airplane mode.
 
+If loud non-speech noise (traffic, wind, a dog bark) keeps starting a turn
+by itself, Settings > Advanced (Experimental) has two VAD sliders for it —
+"Noise rejection" (how loud, relative to background, a sound has to be) and
+"Minimum sound duration" (filters brief transients like a door slam) — see
+`CLAUDE.md` for the reasoning and what a bigger fix would look like if
+these aren't enough.
+
 Every session with at least one completed exchange is saved automatically,
 accessible from the hamburger button (top left) as a sliding history
 drawer — copy a whole past conversation to the clipboard, copy just a
@@ -110,14 +117,17 @@ The WhisperKit `tiny` language-ID model ships inside the app itself (see
 all, even on a fresh install. Translation still downloads its language pack
 for whichever pair you pick during onboarding — that's a one-time,
 Apple-controlled system download with no bundling option — and WhisperKit's
-larger `base` model is an optional download from Settings if you want to
-A/B it, cached after that and reused directly from disk on later launches
-without needing network again (see `CLAUDE.md` for why that used to not be
-true even after the first download). Settings > Language-Detection Models
-lets you trigger the `base` download ahead of time (with a real progress bar
-and a downloaded/not-downloaded indicator per model), so you can get it
-cached before you actually leave for a walk instead of finding out you need
-it mid-conversation.
+larger models (`base`, `small`, `medium`, `large-v2`, `large-v3`) are all
+optional downloads from Settings if you want to A/B them, cached after that
+and reused directly from disk on later launches without needing network
+again (see `CLAUDE.md` for why that used to not be true even after the
+first download). Settings > Language-Detection Models lets you trigger any
+of those downloads ahead of time (with a real progress bar and a
+downloaded/not-downloaded indicator per model), so you can get one cached
+before you actually leave for a walk instead of finding out you need it
+mid-conversation — though `small` and up are untested in this app so far;
+they're built for full transcription quality, not a single quick
+language-ID pass, and may just be too slow on a phone to be worth it.
 
 **Re-run `xcodegen generate` after adding, removing, or renaming any Swift
 file** — the project file is a build artifact of `project.yml` + whatever's
@@ -272,11 +282,16 @@ project as a folder reference (`project.yml`'s `type: folder` source entry
 — a plain group would flatten and rename-collide the three `.mlmodelc`
 directories' identically-named internal files instead of preserving them as
 real nested folders, which WhisperKit requires) and checked first by
-`WhisperModelManager.bundledFolder`. Only `tiny` — `base` (~150MB) stays an
-optional Settings download, since doubling the app's permanent install size
-for a model most people won't switch to isn't worth it by default. The
-binary model files themselves are tracked via **Git LFS**, not plain git
-blobs — see Setup above.
+`WhisperModelManager.bundledFolder`. Only `tiny` — every other multilingual
+size WhisperKit offers (`base` through `large-v3`, several GB at the top
+end) stays an optional Settings download, since permanently growing the
+app's install size for models most people won't switch to isn't worth it by
+default. `WhisperModelOption` deliberately excludes WhisperKit's
+English-only `.en` variants (`tiny.en`, etc.) even as a download option —
+they can't identify non-English audio at all, which would silently break
+language-ID for any pair that isn't English-only. The binary model files
+themselves are tracked via **Git LFS**, not plain git blobs — see Setup
+above.
 
 ### Why the app is foreground-only
 
@@ -344,8 +359,10 @@ full, still-growing list with root causes.
 - [ ] M9 — Hardening: device/firmware matrix, battery/thermal, accessibility, App Store prep
 
 The core loop (listen → identify → transcribe → translate → speak → back to
-listening) has been confirmed working end-to-end on a real device, with both
-the `tiny` and `base` WhisperKit models. The app is deliberately
+listening) has been confirmed working end-to-end on a real device, with the
+`tiny` and `base` WhisperKit models (the rest of the size lineup, `small`
+through `large-v3`, is now downloadable from Settings but unverified). The
+app is deliberately
 foreground-only (see "Why the app is foreground-only" above); extended-session
 battery/thermal behavior with the screen kept awake, and outdoor VAD
 performance (wind, traffic), are still needing real-world verification — see
@@ -372,10 +389,20 @@ the checklist below.
   outdoor sessions (wind, traffic, walking noise) — the original synthetic-
   buffer-only defaults have already been adjusted once based on real usage
   (see `RecognitionConfig`/`VADSensitivityPreset`), and will likely need
-  more.
+  more. It's still pure energy + hysteresis with no actual speech/non-speech
+  classification, so a sufficiently loud non-speech sound (traffic, wind, a
+  dog bark) can still open a turn — Settings > Advanced (Experimental) now
+  exposes the two thresholds that control this (noise rejection level,
+  minimum sound duration) as live knobs, but the real fix if that's not
+  enough is a dedicated sound classifier ahead of VAD (see `CLAUDE.md`).
 - **No programmatic way to install a missing on-device STT locale, TTS
   voice, or force a specific Translation pack download** — the app can only
-  point the user at Settings for any of these.
+  point the user at Settings for any of these. Siri's own voice specifically
+  can never appear in the voice picker no matter what — Apple deliberately
+  withholds it from `AVSpeechSynthesizer` for every third-party app, to stop
+  an app impersonating Siri; confirmed against this app's own device via
+  `SpeechOutputService.logAvailableVoiceInventory()`'s Debug Log dump, not
+  just Apple's forum threads. Not something to keep trying to fix.
 - Real Bluetooth HFP↔A2DP switching latency/glitches between turns haven't
   been formally measured, though nothing in testing so far has flagged it
   as a problem.
@@ -395,11 +422,16 @@ the checklist below.
    check how the confidence threshold and cross-check fallback feel; adjust
    the Settings sliders if it's guessing wrong too often or rejecting too
    eagerly.
-3. A/B the `tiny` vs. `base` model in Settings (Advanced) over the same set
-   of test phrases — no verified answer yet on whether `base`'s accuracy
-   is worth its extra size/latency.
+3. A/B `tiny` vs. the larger models (`base` through `large-v3`) in Settings
+   (Advanced) over the same set of test phrases — no verified answer yet on
+   whether any of them are worth their extra size/latency for a single
+   quick language-ID pass, especially `medium` and up.
 4. Full hands-free loop outdoors, walking, with some wind/ambient noise —
-   the main untested condition for VAD.
+   the main untested condition for VAD. Also: deliberately trigger loud
+   non-speech noise (traffic, a door slam, a dog bark, clapping) and confirm
+   it doesn't start a turn; adjust the new "Noise rejection"/"Minimum sound
+   duration" sliders (Settings > Advanced) and confirm the effect is
+   audible in behavior, not just in the number shown.
 5. Start a session and leave the phone untouched past the device's normal
    auto-lock timeout — confirm the screen stays on (idle timer disabled)
    for as long as several turns take, and watch for battery/thermal effects
@@ -414,9 +446,9 @@ the checklist below.
    change cutoff timing.
 8. Settings > Language-Detection Models: confirm `tiny` shows "Included"
    with no download button (fresh install, airplane mode is fine). Download
-   `base` and confirm the progress bar actually moves and the row flips to
-   "Downloaded"; relaunch (or toggle airplane mode) and confirm it loads
-   from disk with no network needed afterward.
+   one of the other models and confirm the progress bar actually moves and
+   the row flips to "Downloaded"; relaunch (or toggle airplane mode) and
+   confirm it loads from disk with no network needed afterward.
 9. Settings > Languages: change the language pair without going through
    onboarding, including while a conversation is actively running (should
    stop, apply the new pair, and resume) — then use "Refresh available

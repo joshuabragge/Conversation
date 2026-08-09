@@ -27,6 +27,10 @@ struct SettingsView: View {
     // is what the rest of the app actually reads at call time.
     @AppStorage("com.joshuabragge.Conversation.languageIDRejectThreshold") private var languageIDRejectThreshold = 0.6
     @AppStorage("com.joshuabragge.Conversation.whisperModel") private var whisperModelRaw = WhisperModelOption.tiny.rawValue
+    // Same keys as RecognitionConfig.vadSpeechThreshold/.vadMinSpeechDuration
+    // — see that file for what these actually control.
+    @AppStorage("com.joshuabragge.Conversation.vadSpeechThreshold") private var vadSpeechThreshold = 0.18
+    @AppStorage("com.joshuabragge.Conversation.vadMinSpeechDuration") private var vadMinSpeechDuration = 0.15
 
     init(pair: LanguagePair, controller: ConversationLoopController) {
         self.pair = pair
@@ -82,6 +86,20 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
+                        Text("Noise rejection: \(Int(vadSpeechThreshold * 100))%")
+                        Slider(value: $vadSpeechThreshold, in: 0.05...0.5, step: 0.01)
+                        Text("Raise this if loud non-speech sounds — traffic, wind, a dog bark — keep starting a turn. Lower it if quiet speech sometimes doesn't.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Minimum sound duration: \(String(format: "%.2f", vadMinSpeechDuration))s")
+                        Slider(value: $vadMinSpeechDuration, in: 0.05...0.6, step: 0.05)
+                        Text("Raise this to ignore brief loud sounds (a clap, a door slam) that don't sustain long enough to be real speech.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
                         Text("Language-detection sensitivity: \(Int(languageIDRejectThreshold * 100))%")
                         Slider(value: $languageIDRejectThreshold, in: 0.5...0.9, step: 0.05)
                         Text("Lower means fewer \"didn't catch that\" rejections, but a higher chance of guessing the wrong language.")
@@ -96,6 +114,9 @@ struct SettingsView: View {
                     ForEach(WhisperModelOption.allCases) { option in
                         WhisperModelRowView(model: option, manager: modelManager)
                     }
+                    Text("Small and up are untested in this app — they're built for full transcription quality, not a quick language-ID pass, so they may be too slow to be worth using here. Try at your own pace; the default stays Tiny.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } header: {
                     Text("Advanced (Experimental)")
                 }
@@ -117,6 +138,12 @@ struct SettingsView: View {
                     controller.setVADSensitivity(preset)
                 }
             }
+            .onChange(of: vadSpeechThreshold) { _, newValue in
+                controller.setVADSpeechThreshold(newValue)
+            }
+            .onChange(of: vadMinSpeechDuration) { _, newValue in
+                controller.setVADMinSpeechDuration(newValue)
+            }
             .onChange(of: audioCuesEnabled) { _, newValue in
                 AudioCueService.isEnabled = newValue
             }
@@ -124,6 +151,14 @@ struct SettingsView: View {
                 if newPhase == .active {
                     voiceListRefreshToken = UUID()
                 }
+            }
+            .onAppear {
+                // See `SpeechOutputService.logAvailableVoiceInventory`'s
+                // doc comment — gives every Settings-open a fresh raw
+                // voice list in the Debug Log, so "why isn't voice X in
+                // the picker" can be checked against real device state
+                // instead of guessed at.
+                speechOutput.logAvailableVoiceInventory()
             }
         }
     }

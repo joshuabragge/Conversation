@@ -90,10 +90,26 @@ root-caused from a real log, not from reasoning about the code alone.
   pairs without tearing down the whole session graph) is 18.0+; 17.4 only
   has the fixed-pair overload.
 - **Several recognition constants are UserDefaults-backed, not `static let`**
-  (`RecognitionConfig.languageIDRejectThreshold`, `.whisperModel`) so
+  (`RecognitionConfig.languageIDRejectThreshold`, `.whisperModel`,
+  `.vadSensitivity`, `.vadSpeechThreshold`, `.vadMinSpeechDuration`) so
   Settings can expose them as live experiment knobs. Real tuning needs real
   device iteration — don't "fix" these back to hardcoded values without a
-  reason.
+  reason. The VAD-related three specifically must be applied to `vad` in
+  `ConversationLoopController.init` (not just wired to a live `.onChange` in
+  Settings) — see the "persisted VAD settings" bug entry below for what
+  happens if a new one skips this.
+- **`WhisperModelOption` covers WhisperKit's full multilingual size lineup**
+  (`tiny` through `large-v3`), not just `tiny`/`base` — but deliberately
+  *excludes* WhisperKit's English-only `.en` variants (`tiny.en`, etc.) even
+  though they're smaller/faster, because this app's whole job is picking
+  *which* of two chosen languages was spoken; an English-only model can't
+  identify non-English audio at all, so adding one would silently break
+  language-ID for any pair that isn't English-only. Don't add `.en` variants
+  even as an "advanced" option. `.modelName` (WhisperKit's `download(variant:)`
+  string, e.g. `"large-v2"`) and `.rawValue` (this enum's own
+  `UserDefaults` persistence key, e.g. `"largev2"`) are deliberately
+  different strings — don't assume they're interchangeable if extending
+  this enum further.
 - **`WhisperModelManager` is the single owner of WhisperKit model
   download/cache state.** `LanguageIdentifier` (lazy, on first real use) and
   Settings' `WhisperModelRowView` (explicit predownload with a progress bar)
@@ -103,19 +119,23 @@ root-caused from a real log, not from reasoning about the code alone.
   after a conversation turn silently triggered a download). If you need to
   know whether a model is on disk, or want to trigger its download, go
   through `WhisperModelManager.shared`, not a new UserDefaults key.
-- **The `tiny` WhisperKit model ships inside the app bundle; `base` doesn't.**
-  `WhisperKitConfig(modelFolder:)` works identically whether the folder is a
-  previously-downloaded cache dir or one shipped in the app itself — see
-  `WhisperModelManager.bundledFolder`, checked before the cache/download
-  path. It's added in `project.yml` as a `type: folder` source (a plain
-  group would flatten the three `.mlmodelc` dirs' identically-named internal
-  files — `coremldata.bin`, `model.mil`, etc. — into colliding top-level
-  resources instead of preserving them as real nested folders, which
-  WhisperKit requires at load time). Only `tiny` is bundled (~75MB is a
-  reasonable permanent app-size cost for zero-network language-ID out of the
-  box); `base` (~150MB) stays a Settings-triggered download since most users
-  won't switch to it. The model files themselves are tracked via Git LFS —
-  see the IMPORTANT note above.
+- **The `tiny` WhisperKit model ships inside the app bundle; nothing else
+  does.** `WhisperKitConfig(modelFolder:)` works identically whether the
+  folder is a previously-downloaded cache dir or one shipped in the app
+  itself — see `WhisperModelManager.bundledFolder`, checked before the
+  cache/download path. It's added in `project.yml` as a `type: folder`
+  source (a plain group would flatten the three `.mlmodelc` dirs'
+  identically-named internal files — `coremldata.bin`, `model.mil`, etc. —
+  into colliding top-level resources instead of preserving them as real
+  nested folders, which WhisperKit requires at load time). Only `tiny` is
+  bundled (~75MB is a reasonable permanent app-size cost for zero-network
+  language-ID out of the box); every other option (`base` ~150MB up to
+  `large-v2`/`large-v3` at ~3.1GB) stays a Settings-triggered download since
+  most users won't switch to them, and the largest ones would be a
+  questionable permanent install-size cost even if they did. The model
+  files themselves are tracked via Git LFS — see the IMPORTANT note above
+  (only applies to the bundled `tiny` model; downloaded models are plain
+  WhisperKit cache files, not part of the repo at all).
 - **Changing the language pair no longer restarts onboarding.**
   `AppState.updateLanguagePair(_:)` (Settings' `LanguagePairEditorView`)
   changes it in place; `AppState.completeOnboarding(with:)` is only for the
@@ -272,6 +292,36 @@ capture, not from code review.
   just a live tap. Anything gating further work on `isFinal` alone needs a
   timeout-based self-finalize fallback (see `SpeechRecognizerWrapper.transcribe`
   and `RecognitionConfig.transcriptionFallbackTimeout`), not just a longer wait.
+- **Pure energy-based VAD has no concept of "speech" — any sufficiently
+  loud sound opens a turn.** User-reported: loud non-speech noise (traffic,
+  wind, a dog bark, a door slam) was getting picked up and sent through the
+  whole identify→transcribe→translate→speak pipeline, same as real speech,
+  since `VADSegmenter` only measures relative energy against an adaptive
+  noise floor — it has no actual speech/non-speech classification. Low-cost
+  fix: `RecognitionConfig.vadSpeechThreshold` (gates how loud) and
+  `.vadMinSpeechDuration` (gates how sustained, filtering brief transients
+  like a clap or door slam) are now live Settings sliders instead of
+  hardcoded `VADSegmenter.Config` defaults, so this can be tuned per
+  environment instead of guessed once. If that's not enough: the real fix
+  is a dedicated speech/non-speech classifier ahead of (or replacing) the
+  energy gate — `SoundAnalysis`'s `SNClassifySoundRequest` with the
+  built-in `SNClassifierIdentifier.version1` model has a "speech" class
+  among its ~300 on-device categories, no training/download needed, and is
+  the natural next tier before reaching for a dedicated neural VAD (e.g.
+  Silero VAD converted to CoreML, shipped like the WhisperKit models) —
+  which would be a genuinely bigger lift and shouldn't be the first thing
+  tried.
+- **Persisted VAD settings only took effect via a live Settings
+  `.onChange`, not at launch.** `ConversationLoopController.init` built
+  `vad` from `VADSegmenter.Config.default` and never applied whatever was
+  already saved in `UserDefaults` from a previous session — a value only
+  actually reached `vad` if the user revisited Settings and nudged the
+  slider again, so a preference set last session was silently ignored on
+  the next cold launch. Fixed by applying `RecognitionConfig.vadSensitivity`
+  /`.vadSpeechThreshold`/`.vadMinSpeechDuration` to `vad` right in `init`,
+  before `start()` can ever run. Any *new* VAD-related Settings knob needs
+  the same treatment — a `set*` method wired to `.onChange` alone isn't
+  enough, `init` has to read the persisted value too.
 
 ### Set iteration order is not stable across launches
 
@@ -326,6 +376,28 @@ capture, not from code review.
   the loop around it if it was running). Any other `@StateObject` built from
   a `let` property in `init` has the same latent gap if that property can
   now change out from under an already-alive view.
+
+### Text-to-speech voice selection
+
+- **Siri's voice can never appear in the voice picker — this is a platform
+  restriction, not a bug in `VoicePickerView`/`SpeechOutputService`, and
+  isn't fixable from application code.** `SpeechOutputService.availableVoices(for:)`
+  already returns everything `AVSpeechSynthesisVoice.speechVoices()` hands
+  back with no extra filtering, so if a Siri-branded voice were actually
+  present it would already show up. It never does, because Apple
+  deliberately withholds Siri's own voice from `AVSpeechSynthesizer` for
+  every third-party app — confirmed across multiple Apple Developer Forum
+  threads spanning 2021 through the current (2026) iOS cycle, explicitly to
+  stop an app impersonating Siri — and confirmed against this app
+  specifically via `SpeechOutputService.logAvailableVoiceInventory()`'s
+  on-device Debug Log dump (no `com.apple.ttsbundle.siri_*`-style identifier
+  present, even with a Siri voice selected in system Settings). If this
+  ever needs revisiting, start by pulling a fresh voice inventory dump on
+  the device in question rather than assuming the filtering logic is at
+  fault — it never has been. The closest available substitute is steering
+  users toward an Enhanced/Premium-quality regular voice (already
+  distinguished in the picker via `AVSpeechSynthesisVoice.qualityLabel`),
+  not chasing Siri's voice itself again.
 
 ## Logging
 

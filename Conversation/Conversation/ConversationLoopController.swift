@@ -80,6 +80,16 @@ final class ConversationLoopController: ObservableObject {
         vad.onUtteranceEnd = { [weak self] in
             Task { @MainActor in self?.handleUtteranceEnd() }
         }
+        // Apply whatever was already persisted in Settings, not just
+        // `VADSegmenter.Config.default` — these three used to only take
+        // effect via `.onChange` while Settings was open, so a value
+        // saved in a previous session was silently ignored on the next
+        // cold launch until the user revisited Settings and nudged a
+        // slider. `vad` is constructed fresh with the struct defaults
+        // above, so this has to run before `start()` can be called.
+        vad.updateTrailingSilenceDuration(RecognitionConfig.vadSensitivity.trailingSilenceDuration)
+        vad.updateSpeechThreshold(Float(RecognitionConfig.vadSpeechThreshold))
+        vad.updateMinSpeechDuration(RecognitionConfig.vadMinSpeechDuration)
         audioSession.onHeadphonesDisconnected = { [weak self] in self?.handleHeadphonesDisconnected() }
         audioSession.onInterruptionBegan = { [weak self] in self?.handleInterruptionBegan() }
         audioSession.onInterruptionEnded = { [weak self] in self?.handleInterruptionEnded() }
@@ -99,6 +109,19 @@ final class ConversationLoopController: ObservableObject {
     /// pair, there's no reason to require a restart for this one.
     func setVADSensitivity(_ preset: VADSensitivityPreset) {
         vad.updateTrailingSilenceDuration(preset.trailingSilenceDuration)
+    }
+
+    /// Takes effect immediately, even mid-session. See
+    /// `RecognitionConfig.vadSpeechThreshold`'s doc comment — this is the
+    /// main lever for "loud non-speech noise keeps triggering a turn."
+    func setVADSpeechThreshold(_ threshold: Double) {
+        vad.updateSpeechThreshold(Float(threshold))
+    }
+
+    /// Takes effect immediately, even mid-session. See
+    /// `RecognitionConfig.vadMinSpeechDuration`'s doc comment.
+    func setVADMinSpeechDuration(_ duration: Double) {
+        vad.updateMinSpeechDuration(duration)
     }
 
     // MARK: - Lifecycle

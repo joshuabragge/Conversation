@@ -73,6 +73,34 @@ final class SpeechOutputService: NSObject, ObservableObject {
         }
     }
 
+    /// Dumps every voice `AVSpeechSynthesisVoice.speechVoices()` currently
+    /// returns (not filtered to the active language pair) to the Debug
+    /// Log — identifier, name, language, quality, and traits. Exists
+    /// specifically to answer "why don't Siri's voices show up in the
+    /// picker" from a real device rather than from guessing: Apple's own
+    /// live Siri assistant voice (and the Enhanced/Premium "Siri Voice 1-4"
+    /// options under Settings > Accessibility > Spoken Content > Voices) is
+    /// documented, across many Apple Developer Forum threads, as
+    /// deliberately withheld from `AVSpeechSynthesizer` — third-party apps
+    /// can't get it, to stop an app impersonating Siri. `availableVoices(for:)`
+    /// already returns everything `speechVoices()` hands back with no
+    /// extra filtering, so if a Siri-branded voice legitimately isn't
+    /// appearing, this is a platform restriction, not a bug in that
+    /// filter — this dump is how to confirm that on a specific device
+    /// instead of taking that on faith. Call from Settings' Voices section
+    /// so a Debug Log capture always has a fresh copy.
+    func logAvailableVoiceInventory() {
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+        AppLog.info(.speechOutput, "voice inventory: \(voices.count) total installed voice(s)")
+        for voice in voices.sorted(by: { $0.language < $1.language }) {
+            let traits = [
+                voice.voiceTraits.contains(.isNoveltyVoice) ? "novelty" : nil,
+                voice.voiceTraits.contains(.isPersonalVoice) ? "personal" : nil,
+            ].compactMap { $0 }.joined(separator: ",")
+            AppLog.info(.speechOutput, "voice inventory: \(voice.language) \"\(voice.name)\" (\(voice.qualityLabel)) id=\(voice.identifier)\(traits.isEmpty ? "" : " traits=\(traits)")")
+        }
+    }
+
     private func voice(for language: Locale.Language) -> AVSpeechSynthesisVoice? {
         let code = language.minimalIdentifier
         if let overrideID = voiceOverrides[code],
