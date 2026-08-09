@@ -189,6 +189,29 @@ capture, not from code review.
   timeout-based self-finalize fallback (see `SpeechRecognizerWrapper.transcribe`
   and `RecognitionConfig.transcriptionFallbackTimeout`), not just a longer wait.
 
+### Set iteration order is not stable across launches
+
+- **`SupportedLanguages` picked a different, effectively random regional
+  locale variant every launch, because it iterated a `Set`.**
+  `SFSpeechRecognizer.supportedLocales()` returns `Set<Locale>`, and Swift
+  deliberately randomizes `Set`/`Dictionary` iteration order per process
+  (hash-flooding resistance) — the original `.first(where: { $0.identifier.hasPrefix(identifier) })`
+  therefore checked a different variant of each language every single
+  launch. A real device log proved it: run 1 landed on `de-AT`, `zh-HK`,
+  `es-419` (mostly not on-device-capable) and found only `["fr"]`; a
+  relaunch of the exact same app on the exact same device, nothing else
+  changed, landed on different variants and found `["en", "de"]` instead.
+  This looked like (and was originally misdiagnosed as) an on-device
+  readiness *timing* issue — it wasn't; the retry loop in
+  `availableOnThisDevice()` was solving the wrong problem, though it's kept
+  as cheap insurance. The actual fix in `checkOnce()`: check a known-
+  standard region per language first (`preferredRegion`), then
+  deterministically try every other matching variant in *sorted* order,
+  never raw `Set` order. **Any other code that calls `.first(where:)` (or
+  otherwise depends on element order) on a `Set` — including future uses
+  of `SFSpeechRecognizer.supportedLocales()` or similar Set-returning
+  system APIs — has the same latent bug.**
+
 ### SwiftUI / system state going stale
 
 - **`TranslationSessionHost` (`Translation/TranslationService.swift`) must

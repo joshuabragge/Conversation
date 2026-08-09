@@ -23,19 +23,27 @@ enum SupportedLanguages {
         "zh", "ar", "hi", "nl", "pl", "ru", "sv", "tr",
     ]
 
+    /// A standard/default region for each candidate — checked first,
+    /// before falling back to whatever other regional variant is
+    /// available. See `checkOnce`'s doc comment for why this matters: it
+    /// isn't just a tie-breaker, it's the fix for a real bug.
+    private static let preferredRegion: [String: String] = [
+        "en": "en-US", "de": "de-DE", "es": "es-ES", "fr": "fr-FR",
+        "it": "it-IT", "pt": "pt-BR", "ja": "ja-JP", "ko": "ko-KR",
+        "zh": "zh-CN", "ar": "ar-SA", "hi": "hi-IN", "nl": "nl-NL",
+        "pl": "pl-PL", "ru": "ru-RU", "sv": "sv-SE", "tr": "tr-TR",
+    ]
+
     /// Languages with confirmed on-device `SFSpeechRecognizer` support on
     /// this device, right now.
     ///
-    /// Observed in the field: a language can report `supportsOnDeviceRecognition
-    /// == false` on one check and `true` on another within the same
-    /// device, seemingly because on-device model readiness lags behind
-    /// the query rather than being instantly available — bad enough that
-    /// it was taking a force-quit-and-relaunch per language to see them
-    /// all. Retries a few times within a single call before giving up on
-    /// a candidate, accumulating anything that's *ever* confirmed
-    /// available rather than requiring every attempt to agree (once
-    /// confirmed available, it's trusted — the flakiness so far has only
-    /// looked like "not ready yet," never "available then revoked").
+    /// Retries a few times within a single call before giving up on a
+    /// candidate — belt-and-suspenders in case on-device model readiness
+    /// genuinely does lag right after a fresh install, though the much
+    /// bigger effect (see `checkOnce`) turned out to be about *which*
+    /// locale variant gets checked, not timing. Accumulates anything
+    /// that's *ever* confirmed available across attempts, rather than
+    /// requiring every attempt to agree.
     static func availableOnThisDevice() async -> [Locale.Language] {
         var confirmed: [Locale.Language] = []
         let maxAttempts = 5
@@ -61,26 +69,44 @@ enum SupportedLanguages {
         return confirmed
     }
 
+    /// **The real bug this fixes**: `SFSpeechRecognizer.supportedLocales()`
+    /// returns a `Set<Locale>`, and Swift randomizes `Set` iteration order
+    /// per process (deliberately, to resist hash-flooding — not a bug in
+    /// Swift). The original code did `.first(where: { $0.identifier.hasPrefix(identifier) })`
+    /// over that Set, which meant it checked an effectively **random**
+    /// regional variant of each language on every single launch — and a
+    /// real device log showed exactly that: run 1 checked `de-AT`,
+    /// `zh-HK`, `es-419` (mostly *not* on-device-capable) and found only
+    /// `["fr"]`; run 2 of the same app on the same device checked `de-DE`
+    /// (implicitly, via this fix's predecessor happening to land there),
+    /// `zh-CN`, `es-CO` and found `["en", "de"]` instead — a completely
+    /// different result from a relaunch alone, with nothing else changed.
+    /// This wasn't a timing/readiness issue at all.
+    ///
+    /// Fix: check a known-standard region for each language first
+    /// (`preferredRegion`), then deterministically try every other
+    /// matching variant in sorted order — not whichever the Set happened
+    /// to hand back first — so results are consistent across launches and
+    /// prefer the variant most likely to actually have on-device support.
     private static func checkOnce() -> [Locale.Language] {
-        // `SFSpeechRecognizer(locale:)` with a bare language code (no
-        // region) isn't guaranteed to resolve the way a fully-qualified
-        // locale like "en-US" does — match against the actual supported
-        // locale list instead of constructing one ourselves.
-        let supportedLocales = SFSpeechRecognizer.supportedLocales()
+        let sortedLocales = SFSpeechRecognizer.supportedLocales().sorted { $0.identifier < $1.identifier }
 
-        return candidateIdentifiers.compactMap { identifier in
-            guard let matchedLocale = supportedLocales.first(where: { $0.identifier.hasPrefix(identifier) }) else {
-                return nil
+        return candidateIdentifiers.compactMap { identifier -> Locale.Language? in
+            let preferredMatch = preferredRegion[identifier].flatMap { preferred in
+                sortedLocales.first { $0.identifier == preferred }
             }
-            guard let recognizer = SFSpeechRecognizer(locale: matchedLocale) else {
-                AppLog.debug(.onboarding, "SupportedLanguages: \(identifier) matched locale \(matchedLocale.identifier) but SFSpeechRecognizer init failed")
-                return nil
+            let fallbackMatches = sortedLocales.filter { $0.identifier.hasPrefix(identifier) }
+            let orderedCandidates = ([preferredMatch].compactMap { $0 }) + fallbackMatches
+
+            for matchedLocale in orderedCandidates {
+                guard let recognizer = SFSpeechRecognizer(locale: matchedLocale) else { continue }
+                if recognizer.supportsOnDeviceRecognition {
+                    AppLog.debug(.onboarding, "SupportedLanguages: \(identifier) matched via \(matchedLocale.identifier)")
+                    return Locale.Language(identifier: identifier)
+                }
+                AppLog.debug(.onboarding, "SupportedLanguages: \(identifier) (\(matchedLocale.identifier)) not on-device-capable")
             }
-            guard recognizer.supportsOnDeviceRecognition else {
-                AppLog.debug(.onboarding, "SupportedLanguages: \(identifier) (\(matchedLocale.identifier)) not yet on-device-capable")
-                return nil
-            }
-            return Locale.Language(identifier: identifier)
+            return nil
         }
     }
 }
