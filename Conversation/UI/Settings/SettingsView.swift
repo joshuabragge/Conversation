@@ -64,8 +64,10 @@ struct SettingsView: View {
                         Slider(value: $speechOutput.rate,
                                in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate)
                     }
-                    Link("Manage voices in Settings", destination: URL(string: UIApplication.openSettingsURLString)!)
+                    Text("Manage voices in Settings > Accessability > Read & Speak > Voices")
                         .font(.footnote)
+                        .foregroundStyle(.secondary)
+
                 }
 
                 Section("Listening") {
@@ -74,24 +76,9 @@ struct SettingsView: View {
                             Text(preset.displayName).tag(preset.rawValue)
                         }
                     }
-                    Text("How long a pause has to last before Conversation treats your turn as finished.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    Toggle("Ready chime", isOn: $audioCuesEnabled)
                 }
 
-                Section("Sound") {
-                    Toggle("Earcons (processing / done / didn't catch that)", isOn: $audioCuesEnabled)
-                }
-
-                Section {
-                    ForEach(WhisperModelOption.allCases) { option in
-                        WhisperModelRowView(model: option, manager: modelManager)
-                    }
-                } header: {
-                    Text("Language-Detection Models")
-                } footer: {
-                    Text("Tiny ships with the app, so language-detection needs no network even on a brand new install. Base is an optional download, cached once and used fully offline after that — download it ahead of time here instead of waiting for it to be needed mid-conversation.")
-                }
 
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
@@ -101,15 +88,16 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Picker("Language-ID model", selection: $whisperModelRaw) {
+                    Picker("Detection Model", selection: $whisperModelRaw) {
                         ForEach(WhisperModelOption.allCases) { option in
                             Text(option.displayName).tag(option.rawValue)
                         }
                     }
+                    ForEach(WhisperModelOption.allCases) { option in
+                        WhisperModelRowView(model: option, manager: modelManager)
+                    }
                 } header: {
                     Text("Advanced (Experimental)")
-                } footer: {
-                    Text("These affect how reliably Conversation tells your two languages apart. A bigger model is likely more accurate but slower and bigger to download — worth A/B testing. Model changes take effect the next time the app loads it (e.g. next launch), not immediately — download it above ahead of time so the switch is instant.")
                 }
 
                 Section("Debugging") {

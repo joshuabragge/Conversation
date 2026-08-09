@@ -8,9 +8,9 @@ struct LanguageChipView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text("Language:")
+            /*Text("Language:")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondary)*/
             chip("Auto", isSelected: selection == nil) { selection = nil }
             chip(pair.first.displayName, isSelected: selection == pair.first) { selection = pair.first }
             chip(pair.second.displayName, isSelected: selection == pair.second) { selection = pair.second }

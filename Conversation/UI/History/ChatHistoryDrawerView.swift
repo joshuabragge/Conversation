@@ -47,9 +47,9 @@ struct ChatHistoryDrawerView: View {
             .navigationTitle("History")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                /*ToolbarItem(placement: .topBarLeading) {
                     Button("Close") { isPresented = false }
-                }
+                }*/
                 if !store.sessions.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(role: .destructive) {

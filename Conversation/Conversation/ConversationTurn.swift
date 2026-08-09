@@ -51,6 +51,6 @@ struct ConversationTurn: Identifiable, Equatable, Codable {
     /// Plain-text rendering for clipboard export — used both for "copy
     /// whole conversation" and for copying a subset of selected turns.
     var formattedText: String {
-        "[\(heardLanguage.minimalIdentifier.uppercased())] \(heardText)\n[\(translatedLanguage.minimalIdentifier.uppercased())] \(translatedText)"
+        "in-[\(heardLanguage.minimalIdentifier.uppercased())] \(heardText) \n out-[\(translatedLanguage.minimalIdentifier.uppercased())] \(translatedText)"
     }
 }

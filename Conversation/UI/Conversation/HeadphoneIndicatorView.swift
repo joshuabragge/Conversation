@@ -5,11 +5,11 @@ struct HeadphoneIndicatorView: View {
 
     var body: some View {
         if isConnected {
-            Label("Headphones connected", systemImage: "headphones")
+            Label("", systemImage: "headphones")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
-            Label("No headphones — works, but that's the whole point of this app", systemImage: "headphones.slash")
+            Label("", systemImage: "headphones.slash")
                 .font(.caption)
                 .foregroundStyle(.orange)
         }

@@ -35,12 +35,13 @@ struct ConversationView: View {
                         .frame(width: 300)
                         .frame(maxHeight: .infinity)
                         .background(.background)
-                        .ignoresSafeArea(edges: .vertical)
+/*                        .ignoresSafeArea(edges: .vertical)*/
                         .transition(.move(edge: .leading))
                 }
             }
             .animation(.easeInOut(duration: 0.25), value: showHistory)
-            .navigationTitle("\(pair.first.displayName) ⇄ \(pair.second.displayName)")
+            .navigationTitle("Conversation")
+            /*.navigationTitle("\(pair.first.displayName) ⇄ \(pair.second.displayName)")*/
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -83,18 +84,20 @@ struct ConversationView: View {
 
     private var mainContent: some View {
         VStack(spacing: 12) {
-            HeadphoneIndicatorView(isConnected: audioSession.isHeadphonesConnected)
+            Spacer()
+            HStack {
 
-            LanguageChipView(pair: pair, selection: $controller.manualOverride)
-
+                LanguageChipView(pair: pair, selection: $controller.manualOverride)
+                Spacer()
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if controller.history.isEmpty {
+                    /*if controller.history.isEmpty {
                         Text(isRunning ? "Say something, in either language…" : "Tap start to begin.")
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.top, 40)
-                    }
+                    }*/
                     // Newest first, so the most recent exchange is
                     // immediately visible without scrolling — the
                     // whole point of a hands-free walking app is not
@@ -119,13 +122,11 @@ struct ConversationView: View {
                         .fill(isRunning ? Color.red : Color.accentColor)
                         .frame(width: 88, height: 88)
                         .overlay {
-                            Image(systemName: isRunning ? "stop.fill" : "play.fill")
-                                .font(.system(size: 32))
+                            Image(systemName: isRunning ? "waveform" : "waveform")
+                                .font(.system(size: 48))
                                 .foregroundStyle(.white)
                         }
-                    Text(isRunning ? "Stop" : "Start listening")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HeadphoneIndicatorView(isConnected: audioSession.isHeadphonesConnected)
                 }
             }
             .buttonStyle(.plain)
