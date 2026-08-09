@@ -321,7 +321,24 @@ final class ConversationLoopController: ObservableObject {
             AppLog.debug(.conversation, "process: stopping mic engine before Speaking phase")
             mic.stopEngine()
             try audioSession.activateSpeaking()
-            try await speechOutput.speak(translated, language: targetLanguage)
+            do {
+                try await withTimeout(seconds: RecognitionConfig.speechOutputTimeout) {
+                    try await self.speechOutput.speak(translated, language: targetLanguage)
+                }
+            } catch is TimeoutError {
+                // Guards against AVSpeechSynthesizer's documented
+                // background-silence issue wedging the whole hands-free
+                // loop forever with the mic left off — see
+                // SpeechOutputService's doc comment. Recovers the loop
+                // even though this specific turn's audio never played.
+                AppLog.error(.conversation, "process: speak() timed out after \(RecognitionConfig.speechOutputTimeout)s")
+                try? audioSession.activateListening()
+                vad.reset()
+                armVADGracePeriod()
+                try? mic.restartEngine()
+                await showErrorThenResumeListening("Couldn't speak the translation — this can happen in the background. Check the Debug Log.")
+                return
+            }
 
             try audioSession.activateListening()
             vad.reset()

@@ -105,6 +105,15 @@ enum RecognitionConfig {
     /// showing forever with nothing to catch it.
     static let languageIdentificationTimeout: TimeInterval = 45.0
 
+    /// How long to wait on speech synthesis + playback before treating it
+    /// as stuck. Exists specifically because `AVSpeechSynthesizer` can
+    /// silently produce no output at all while the app is backgrounded (a
+    /// documented, still-unresolved Apple platform issue — see
+    /// `SpeechOutputService`'s doc comment) — without this, a turn could
+    /// hang at `.speaking` forever, with the mic left off, ending the
+    /// hands-free loop with no way to recover except restarting.
+    static let speechOutputTimeout: TimeInterval = 15.0
+
     /// After this many consecutive rejected/low-confidence turns, hint at
     /// the manual language chip instead of continuing to guess silently —
     /// heavy tiny-model tuning is expected to take real iteration, so the

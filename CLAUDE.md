@@ -90,25 +90,38 @@ capture, not from code review.
   with a cryptic OSStatus error, not a missing-voice problem. Fixed in
   `ConversationLoopController.process`: `mic.stopEngine()` before
   `activateSpeaking()`, `mic.restartEngine()` after `activateListening()`.
-- **TTS was silent whenever the app wasn't in the foreground (locked
-  screen, another app active), even though mic capture and earcons both
-  worked, and even after avoiding the `.playAndRecord`→`.playback`
-  category switch in that case.** That second fact ruled out audio-session
-  category as the cause entirely: mic capture and `AVAudioPlayer`-based
-  earcons kept working under the identical session config that produced
-  silent TTS. What's actually different is the *playback mechanism* —
-  `AVSpeechSynthesizer.speak()`'s live output path is unreliable while
-  backgrounded, a limitation of that specific API, not something an audio
-  session config can fix (informally documented by other developers
-  hitting the same thing). Fixed in `SpeechOutputService` by not using
-  `speak()` at all: `AVSpeechSynthesizer.write(_:toBufferCallback:)`
-  renders the utterance to a temp file instead (a different, non-live code
-  path), and that file is played back with `AVAudioPlayer` — the same
-  mechanism already confirmed working in the background for earcons. The
-  `.playback`-vs-`.playAndRecord` foreground/background branching in
-  `AudioSessionManager.activateSpeaking()` is still worth keeping for its
-  original Bluetooth-quality reason (that's a route/category property, not
-  tied to which playback API is used) — just wasn't the fix for *this* bug.
+- **TTS is silent whenever the app isn't in the foreground (locked screen,
+  another app active) — a long-standing, still-unresolved Apple platform
+  issue, not something specific to this app.** Multiple independent
+  developer forum threads going back to iOS 13 report exactly this:
+  `AVSpeechSynthesizer` produces no audio while backgrounded regardless of
+  audio session config. Confirmed here two different ways, both of which
+  independently *failed* to fix it — which is itself the useful signal,
+  not a wasted effort: (1) keeping `AudioSessionManager` in
+  `.playAndRecord` instead of switching to `.playback` while backgrounded
+  ruled out session category as the cause; (2) rendering via
+  `write(_:toBufferCallback:)` to a file played back with `AVAudioPlayer`
+  instead of `speak()`'s live output ruled out "live playback path
+  specifically." Mic capture and `AVAudioPlayer`-based earcons keep
+  working fine under the exact same backgrounded conditions, so this isn't
+  background audio being blocked in general — it's specific to
+  `AVSpeechSynthesizer` needing *something*, still not fully understood.
+  Current layer: `SpeechOutputService` keeps a second, unrelated
+  `AVAudioPlayer` tone actively playing *during* synthesis
+  (`startKeepAliveTone`), a workaround several other developers report
+  works, on the theory that concurrent `AVAudioPlayer` activity keeps the
+  shared audio render path "trusted" by iOS while backgrounded. Unverified
+  whether this actually holds — if it doesn't, stop trying further blind
+  technical fixes and design around the limitation instead (e.g. queue
+  translations and speak them once the app returns to the foreground).
+  Either way, `ConversationLoopController` now wraps the whole `speak()`
+  call in `RecognitionConfig.speechOutputTimeout` (15s) so a stuck
+  synthesis can't wedge the hands-free loop forever with the mic left off
+  — that safety net stands regardless of whether the keep-alive tone
+  works. The `.playback`-vs-`.playAndRecord` foreground/background
+  branching in `activateSpeaking()` is still worth keeping for its
+  original Bluetooth-quality reason (a route/category property, unrelated
+  to this bug) — it just wasn't the fix for *this* one.
 - Earcons must play through `AVAudioPlayer`/the app's own `AVAudioSession`,
   not `AudioServicesPlaySystemSound` — the latter is silenced by the
   physical ring/silent switch; audio routed through the app's session
