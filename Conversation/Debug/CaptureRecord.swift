@@ -11,12 +11,23 @@ import Foundation
 /// explains a rejection.
 struct CaptureTranscriptAttempt: Codable, Equatable {
     let locale: String
-    /// `nil` means `SpeechRecognizerWrapper.transcribe` itself returned
-    /// `nil` — either on-device recognition isn't available for this
-    /// locale, or (the case that matters most here) it completed normally
-    /// with an empty transcript. Kept as an optional rather than
-    /// collapsing both to `""` so the debug page can say which happened.
+    /// `nil` means nothing was transcribed — see `error` and
+    /// `finishedNormally` to tell apart *why*, which is the whole reason
+    /// this mirrors `TranscriptionResult` instead of just keeping the old
+    /// bare `String?`: a real capture showed both candidate locales
+    /// coming back empty for clearly audible, correctly-identified
+    /// speech, and there was no way to tell whether Apple's STT
+    /// genuinely found nothing or just never got the chance to.
     let text: String?
+    /// Set only if on-device recognition was unavailable for this locale,
+    /// or the recognition task itself errored — `nil` even when `text` is
+    /// also nil just means "recognized nothing," not "something broke."
+    let error: String?
+    /// False if the ~5s fallback timeout elapsed before Apple's `isFinal`
+    /// fired, rather than the recognizer finishing on its own — see
+    /// `SpeechRecognizerWrapper.TranscriptionResult`'s doc comment.
+    let finishedNormally: Bool
+    let elapsedSeconds: Double
 }
 
 /// WhisperKit's language-ID verdict for a capture — `nil` on the
@@ -40,6 +51,22 @@ enum CaptureOutcome: Codable, Equatable {
     case accepted(spokenLanguage: String, heardText: String, translatedLanguage: String, translatedText: String)
     case rejected(String)
     case error(String)
+}
+
+extension CaptureTranscriptAttempt {
+    /// One-line summary for `CaptureListView`'s row — leads with the text
+    /// (or its absence), then whichever of `error`/`finishedNormally`
+    /// actually explains that absence, so "why is Apple failing" doesn't
+    /// require opening the detail view just to see the reason.
+    var summary: String {
+        var parts = [text?.isEmpty == false ? "\"\(text!)\"" : "(empty)"]
+        if !finishedNormally {
+            parts.append("timed out after \(String(format: "%.1f", elapsedSeconds))s")
+        } else if let error {
+            parts.append("error: \(error)")
+        }
+        return parts.joined(separator: " — ")
+    }
 }
 
 /// One recorded utterance plus everything the pipeline concluded about

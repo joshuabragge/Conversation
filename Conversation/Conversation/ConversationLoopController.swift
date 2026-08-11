@@ -357,6 +357,12 @@ final class ConversationLoopController: ObservableObject {
         var diagnosticLanguageID: CaptureLanguageIDInfo?
         var diagnosticAttempts: [CaptureTranscriptAttempt] = []
         var captureSaved = false
+        func recordAttempt(locale: String, _ result: TranscriptionResult) {
+            diagnosticAttempts.append(CaptureTranscriptAttempt(
+                locale: locale, text: result.text, error: result.error,
+                finishedNormally: result.finishedNormally, elapsedSeconds: result.elapsed
+            ))
+        }
         func saveCapture(_ outcome: CaptureOutcome) {
             guard !captureSaved else { return }
             captureSaved = true
@@ -376,9 +382,9 @@ final class ConversationLoopController: ObservableObject {
                 state = .transcribing
                 let transcript = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: manualOverride.minimalIdentifier))
                 #if DEBUG
-                diagnosticAttempts.append(CaptureTranscriptAttempt(locale: manualOverride.minimalIdentifier, text: transcript))
+                recordAttempt(locale: manualOverride.minimalIdentifier, transcript)
                 #endif
-                guard let t = transcript, !t.isEmpty else {
+                guard let t = transcript.text, !t.isEmpty else {
                     AudioCueService.playRejected()
                     #if DEBUG
                     saveCapture(.rejected("manual override (\(manualOverride.minimalIdentifier)): empty transcript"))
@@ -428,8 +434,8 @@ final class ConversationLoopController: ObservableObject {
                         fileURL: fileURL, primary: idResult.language, alternate: alternate
                     )
                     #if DEBUG
-                    diagnosticAttempts.append(CaptureTranscriptAttempt(locale: idResult.language.minimalIdentifier, text: crossCheckResult.primaryText))
-                    diagnosticAttempts.append(CaptureTranscriptAttempt(locale: alternate.minimalIdentifier, text: crossCheckResult.alternateText))
+                    recordAttempt(locale: idResult.language.minimalIdentifier, crossCheckResult.primary)
+                    recordAttempt(locale: alternate.minimalIdentifier, crossCheckResult.alternate)
                     #endif
                     guard let crossChecked = crossCheckResult.winner else {
                         AudioCueService.playRejected()
@@ -444,9 +450,9 @@ final class ConversationLoopController: ObservableObject {
                 } else {
                     let primaryTranscript = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: idResult.language.minimalIdentifier))
                     #if DEBUG
-                    diagnosticAttempts.append(CaptureTranscriptAttempt(locale: idResult.language.minimalIdentifier, text: primaryTranscript))
+                    recordAttempt(locale: idResult.language.minimalIdentifier, primaryTranscript)
                     #endif
-                    guard let t = primaryTranscript, !t.isEmpty else {
+                    guard let t = primaryTranscript.text, !t.isEmpty else {
                         // WhisperKit was confident about the language
                         // (that's why we're in this branch, not the
                         // cross-check one above), but Apple's on-device
@@ -593,18 +599,20 @@ final class ConversationLoopController: ObservableObject {
     /// itself known to be less reliable on very short phrases. Treat this
     /// as one more (differently-biased) opinion, not a solved problem.
     ///
-    /// Returns both raw transcripts alongside the winner (rather than just
-    /// the winner) so callers building a `CaptureRecord` (DEBUG builds
-    /// only, see `Debug/CaptureRecord.swift`) can show what each candidate
-    /// locale actually produced, not just whichever one this method picked —
-    /// plain `String?`s rather than the DEBUG-only `CaptureTranscriptAttempt`
-    /// type, so this method itself doesn't need `#if DEBUG` gating.
+    /// Returns both full `TranscriptionResult`s alongside the winner
+    /// (rather than just the winner) so callers building a `CaptureRecord`
+    /// (DEBUG builds only, see `Debug/CaptureRecord.swift`) can show what
+    /// each candidate locale actually produced — including *why* one came
+    /// back empty (genuine empty result vs. a timeout vs. a real error),
+    /// not just whichever text this method picked.
     private func crossCheckLanguage(
         fileURL: URL, primary: Locale.Language, alternate: Locale.Language
-    ) async -> (winner: (language: Locale.Language, text: String)?, primaryText: String?, alternateText: String?) {
+    ) async -> (winner: (language: Locale.Language, text: String)?, primary: TranscriptionResult, alternate: TranscriptionResult) {
         AppLog.info(.conversation, "crossCheckLanguage: verifying \(primary.minimalIdentifier) against \(alternate.minimalIdentifier)")
-        let primaryText = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: primary.minimalIdentifier))
-        let alternateText = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: alternate.minimalIdentifier))
+        let primaryResult = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: primary.minimalIdentifier))
+        let alternateResult = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: alternate.minimalIdentifier))
+        let primaryText = primaryResult.text
+        let alternateText = alternateResult.text
         AppLog.info(.conversation, "crossCheckLanguage: \(primary.minimalIdentifier)=\"\(primaryText ?? "nil")\" \(alternate.minimalIdentifier)=\"\(alternateText ?? "nil")\"")
 
         let winner: (language: Locale.Language, text: String)?
@@ -622,7 +630,7 @@ final class ConversationLoopController: ObservableObject {
             AppLog.info(.conversation, "crossCheckLanguage: plausibility \(primary.minimalIdentifier)=\(primaryScore) \(alternate.minimalIdentifier)=\(alternateScore)")
             winner = alternateScore > primaryScore ? (alternate, a) : (primary, p)
         }
-        return (winner, primaryText, alternateText)
+        return (winner, primaryResult, alternateResult)
     }
 
     /// How much `text` reads like real `expected`-language text, per

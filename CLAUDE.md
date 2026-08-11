@@ -351,6 +351,16 @@ capture, not from code review.
   just a live tap. Anything gating further work on `isFinal` alone needs a
   timeout-based self-finalize fallback (see `SpeechRecognizerWrapper.transcribe`
   and `RecognitionConfig.transcriptionFallbackTimeout`), not just a longer wait.
+  A real device capture (Settings > Captures) showed exactly this
+  ambiguity from the outside: both candidate locales came back with an
+  empty transcript for clearly audible, correctly-identified speech, with
+  no way to tell whether Apple's STT genuinely found nothing or just
+  never got the chance to before the fallback timeout kicked in.
+  `transcribe` now returns a `TranscriptionResult` (`finishedNormally`,
+  `error`, `elapsed`, not just bare text) instead of `String?`, and
+  `CaptureRecord`'s per-locale attempts carry the same fields — so this
+  question is answerable straight from a capture's detail view instead of
+  needing a fresh Debug Log capture to re-diagnose it live.
 - **Pure energy-based VAD has no concept of "speech" — any sufficiently
   loud sound opens a turn.** User-reported: loud non-speech noise (traffic,
   wind, a dog bark, a door slam) was getting picked up and sent through the

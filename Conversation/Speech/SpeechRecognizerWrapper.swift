@@ -1,5 +1,36 @@
 import Speech
 
+/// One attempt at transcribing a clip in one locale — more than just the
+/// text, so callers (and `ConversationLoopController`'s DEBUG capture
+/// diagnostics) can tell apart *why* `text` came back nil: a genuinely
+/// empty result, a real recognizer error, or the ~5s fallback timeout
+/// (`RecognitionConfig.transcriptionFallbackTimeout`) elapsing before
+/// `isFinal` ever fired. Those point at very different next steps, and
+/// collapsing them all to a bare `nil` (the old return type) made that
+/// undiagnosable after the fact — a real device capture showed both
+/// candidate locales coming back with an empty transcript for clearly
+/// audible, correctly-identified speech, with no way to tell from the
+/// result alone whether Apple's STT genuinely found nothing or just
+/// never got the chance to.
+struct TranscriptionResult: Equatable {
+    /// nil when nothing was transcribed, for any reason — see `error` and
+    /// `finishedNormally` to tell those reasons apart.
+    let text: String?
+    /// Set only if `SFSpeechRecognizer(locale:)` was unavailable for this
+    /// locale, or the recognition task's completion handler delivered a
+    /// real `Error`. `nil` even when `text` is also nil just means
+    /// "recognized nothing," not "something broke."
+    let error: String?
+    /// False if the ~5s fallback timeout elapsed before `isFinal` fired,
+    /// rather than the recognizer finishing (successfully or with an
+    /// error) on its own — confirmed on real AirPods/HFP routes, where
+    /// `isFinal` sometimes never fires at all, even for a complete fixed
+    /// file. `text` in that case is whatever was transcribed before the
+    /// timeout, not necessarily empty.
+    let finishedNormally: Bool
+    let elapsed: TimeInterval
+}
+
 /// One-shot on-device transcription of an already-recorded utterance file,
 /// in whichever locale `LanguageIdentifier` determined.
 ///
@@ -20,13 +51,14 @@ final class SpeechRecognizerWrapper: ObservableObject {
     /// found that some input routes (AirPods HFP) don't reliably call it
     /// back at all even for a fixed, complete file. Caps the wait either
     /// way and falls back to whatever's been transcribed so far.
-    func transcribe(fileURL: URL, locale: Locale) async -> String? {
+    func transcribe(fileURL: URL, locale: Locale) async -> TranscriptionResult {
+        let start = Date()
         AppLog.info(.transcription, "transcribe: starting for \(fileURL.lastPathComponent) in \(locale.identifier)")
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.supportsOnDeviceRecognition else {
             let message = "On-device recognition isn't available for \(locale.identifier)."
             AppLog.error(.transcription, "transcribe: \(message)")
             errorMessage = message
-            return nil
+            return TranscriptionResult(text: nil, error: message, finishedNormally: false, elapsed: Date().timeIntervalSince(start))
         }
 
         isTranscribing = true
@@ -37,6 +69,7 @@ final class SpeechRecognizerWrapper: ObservableObject {
         request.requiresOnDeviceRecognition = true
 
         var latestText = ""
+        var taskError: String?
         var didFinish = false
         var finishedViaFallback = true
 
@@ -48,6 +81,7 @@ final class SpeechRecognizerWrapper: ObservableObject {
                 if let error {
                     AppLog.error(.transcription, "transcribe: recognitionTask error: \(error.localizedDescription)")
                     self?.errorMessage = error.localizedDescription
+                    taskError = error.localizedDescription
                     didFinish = true
                     finishedViaFallback = false
                 } else if result?.isFinal == true {
@@ -71,7 +105,11 @@ final class SpeechRecognizerWrapper: ObservableObject {
 
         recognitionTask?.cancel()
         recognitionTask = nil
-        AppLog.info(.transcription, "transcribe: result=\"\(latestText)\"")
-        return latestText.isEmpty ? nil : latestText
+        let elapsed = Date().timeIntervalSince(start)
+        AppLog.info(.transcription, "transcribe: result=\"\(latestText)\" finishedNormally=\(!finishedViaFallback) elapsed=\(elapsed)s")
+        return TranscriptionResult(
+            text: latestText.isEmpty ? nil : latestText, error: taskError,
+            finishedNormally: !finishedViaFallback, elapsed: elapsed
+        )
     }
 }

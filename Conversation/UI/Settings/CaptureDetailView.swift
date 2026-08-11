@@ -38,13 +38,7 @@ struct CaptureDetailView: View {
             if !capture.transcriptAttempts.isEmpty {
                 Section("Transcription attempts (Apple STT)") {
                     ForEach(capture.transcriptAttempts, id: \.locale) { attempt in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(attempt.locale.uppercased())
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            Text(attempt.text?.isEmpty == false ? attempt.text! : "(empty transcript)")
-                                .italic(attempt.text?.isEmpty != false)
-                        }
+                        TranscriptAttemptRow(attempt: attempt)
                     }
                 }
             }
@@ -66,6 +60,51 @@ struct CaptureDetailView: View {
         .navigationTitle("Capture")
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear { player.stop() }
+    }
+}
+
+/// One `CaptureTranscriptAttempt`'s row — split out from `CaptureDetailView`
+/// because inlining this much conditional text/color logic directly in a
+/// `List` body blew past the type-checker's time budget ("unable to
+/// type-check this expression in reasonable time").
+private struct TranscriptAttemptRow: View {
+    let attempt: CaptureTranscriptAttempt
+
+    private var transcriptText: String {
+        attempt.text?.isEmpty == false ? attempt.text! : "(empty transcript)"
+    }
+
+    // Distinguishes "the recognizer genuinely found nothing" from "it
+    // never got the chance to" — an empty transcript alone can't tell
+    // those apart, which is exactly what made a real device capture
+    // ambiguous (see CLAUDE.md).
+    private var timingText: String {
+        attempt.finishedNormally
+            ? "completed normally in \(String(format: "%.2f", attempt.elapsedSeconds))s"
+            : "⚠️ timed out after \(String(format: "%.2f", attempt.elapsedSeconds))s waiting for isFinal"
+    }
+
+    private var timingColor: Color {
+        attempt.finishedNormally ? .secondary : .orange
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(attempt.locale.uppercased())
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(transcriptText)
+                .italic(attempt.text?.isEmpty != false)
+            Text(timingText)
+                .font(.caption2)
+                .foregroundStyle(timingColor)
+            if let error = attempt.error {
+                Text("Error: \(error)")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 #endif

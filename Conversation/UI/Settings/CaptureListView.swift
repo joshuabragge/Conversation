@@ -77,7 +77,7 @@ private struct CaptureRowView: View {
                     .foregroundStyle(.secondary)
             }
             ForEach(capture.transcriptAttempts, id: \.locale) { attempt in
-                Text("\(attempt.locale): \(attempt.text?.isEmpty == false ? "\"\(attempt.text!)\"" : "(empty)")")
+                Text("\(attempt.locale): \(attempt.summary)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
