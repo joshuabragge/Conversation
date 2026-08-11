@@ -380,7 +380,7 @@ final class ConversationLoopController: ObservableObject {
             if let manualOverride {
                 AppLog.info(.conversation, "process: using manual override \(manualOverride.minimalIdentifier)")
                 state = .transcribing
-                let transcript = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: manualOverride.minimalIdentifier))
+                let transcript = await recognizer.transcribe(fileURL: fileURL, locale: SupportedLanguages.sttLocale(for: manualOverride))
                 #if DEBUG
                 recordAttempt(locale: manualOverride.minimalIdentifier, transcript)
                 #endif
@@ -448,7 +448,7 @@ final class ConversationLoopController: ObservableObject {
                     spokenLanguage = crossChecked.language
                     text = crossChecked.text
                 } else {
-                    let primaryTranscript = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: idResult.language.minimalIdentifier))
+                    let primaryTranscript = await recognizer.transcribe(fileURL: fileURL, locale: SupportedLanguages.sttLocale(for: idResult.language))
                     #if DEBUG
                     recordAttempt(locale: idResult.language.minimalIdentifier, primaryTranscript)
                     #endif
@@ -609,8 +609,8 @@ final class ConversationLoopController: ObservableObject {
         fileURL: URL, primary: Locale.Language, alternate: Locale.Language
     ) async -> (winner: (language: Locale.Language, text: String)?, primary: TranscriptionResult, alternate: TranscriptionResult) {
         AppLog.info(.conversation, "crossCheckLanguage: verifying \(primary.minimalIdentifier) against \(alternate.minimalIdentifier)")
-        let primaryResult = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: primary.minimalIdentifier))
-        let alternateResult = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: alternate.minimalIdentifier))
+        let primaryResult = await recognizer.transcribe(fileURL: fileURL, locale: SupportedLanguages.sttLocale(for: primary))
+        let alternateResult = await recognizer.transcribe(fileURL: fileURL, locale: SupportedLanguages.sttLocale(for: alternate))
         let primaryText = primaryResult.text
         let alternateText = alternateResult.text
         AppLog.info(.conversation, "crossCheckLanguage: \(primary.minimalIdentifier)=\"\(primaryText ?? "nil")\" \(alternate.minimalIdentifier)=\"\(alternateText ?? "nil")\"")

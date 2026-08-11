@@ -34,6 +34,16 @@ enum SupportedLanguages {
         "pl": "pl-PL", "ru": "ru-RU", "sv": "sv-SE", "tr": "tr-TR",
     ]
 
+    /// The actual on-device-capable regional locale `checkOnce()` matched
+    /// for each language code, most recent process run — e.g. "de" ->
+    /// "de-DE". Populated as a side effect of `availableOnThisDevice()`
+    /// (called from the language-pair pickers in onboarding and
+    /// Settings), consulted by `sttLocale(for:)`. In-memory only, like
+    /// everything else on this `enum` — doesn't need to survive a
+    /// relaunch, since `sttLocale(for:)` has a same-answer fallback for
+    /// when it's empty.
+    private static var resolvedLocales: [String: Locale] = [:]
+
     /// Languages with confirmed on-device `SFSpeechRecognizer` support on
     /// this device, right now.
     ///
@@ -102,11 +112,45 @@ enum SupportedLanguages {
                 guard let recognizer = SFSpeechRecognizer(locale: matchedLocale) else { continue }
                 if recognizer.supportsOnDeviceRecognition {
                     AppLog.debug(.onboarding, "SupportedLanguages: \(identifier) matched via \(matchedLocale.identifier)")
+                    resolvedLocales[identifier] = matchedLocale
                     return Locale.Language(identifier: identifier)
                 }
                 AppLog.debug(.onboarding, "SupportedLanguages: \(identifier) (\(matchedLocale.identifier)) not on-device-capable")
             }
             return nil
         }
+    }
+
+    /// The regional `Locale` (e.g. "de-DE") to actually hand to
+    /// `SFSpeechRecognizer(locale:)` for `language` — never a bare
+    /// language-code `Locale` like `Locale(identifier: "de")`.
+    ///
+    /// `SpeechRecognizerWrapper.transcribe` used to be called with
+    /// exactly that: a bare-language-code `Locale` reconstructed fresh
+    /// every turn from `Locale.Language.minimalIdentifier`, relying on
+    /// `SFSpeechRecognizer`'s own undocumented internal matching to
+    /// resolve it to an actual regional model — instead of the specific
+    /// variant `checkOnce()` had *already* validated as on-device-capable
+    /// on this device. Two independent real-device captures (Settings >
+    /// Captures) showed WhisperKit confidently and correctly identifying
+    /// clearly audible German speech while Apple's STT came back
+    /// completely empty, `isFinal` firing normally in well under half a
+    /// second — too fast to be a genuine attempt at real speech, and
+    /// consistent with the recognizer silently resolving the bare code to
+    /// a locale variant it doesn't have a working on-device model for.
+    ///
+    /// Prefers whatever `availableOnThisDevice()` already confirmed
+    /// on-device-capable this run (`resolvedLocales`); falls back to
+    /// `preferredRegion`'s curated default if that hasn't run yet this
+    /// process (e.g. a returning user who never reopened the language
+    /// picker after onboarding); falls back to the bare code only if
+    /// `language` isn't one of `candidateIdentifiers` at all, which
+    /// shouldn't happen given `LanguagePair` is only ever built from that
+    /// same candidate pool.
+    static func sttLocale(for language: Locale.Language) -> Locale {
+        let code = language.minimalIdentifier
+        if let resolved = resolvedLocales[code] { return resolved }
+        if let preferred = preferredRegion[code] { return Locale(identifier: preferred) }
+        return Locale(identifier: code)
     }
 }

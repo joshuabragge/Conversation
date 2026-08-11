@@ -340,6 +340,35 @@ capture, not from code review.
   raw transcript per turn, not just the winner, specifically so this
   class of "which locale said what" question doesn't need re-deriving
   from log lines next time.
+- **Update to the above: at least some of those "Apple STT limitation"
+  empty transcripts were actually `SpeechRecognizerWrapper.transcribe`
+  asking for the wrong locale, not a genuine STT failure.** Every call
+  site constructed `SFSpeechRecognizer`'s locale from a bare language
+  code — `Locale(identifier: "de")` — reconstructed fresh from
+  `Locale.Language.minimalIdentifier` every turn, relying on
+  `SFSpeechRecognizer`'s own undocumented internal matching to resolve
+  that to an actual regional model. Meanwhile `SupportedLanguages.
+  checkOnce()` (previous section) already does this properly elsewhere
+  in the app: it explicitly matches each language to a real regional
+  locale (`preferredRegion`, e.g. "de" -> "de-DE") and confirms
+  `supportsOnDeviceRecognition` against *that specific variant* — but
+  discarded the resolved locale and returned only the bare
+  `Locale.Language`, so transcription never benefited from it. Two
+  independent real-device captures (Settings > Captures) showed the
+  same signature: WhisperKit confidently right about German, Apple's
+  STT completing normally (not timing out) in well under half a second
+  with nothing — too fast to be a genuine attempt at real speech, and
+  consistent with the bare code resolving to a locale variant without a
+  working on-device model. Fixed via `SupportedLanguages.sttLocale(for:)`,
+  which returns the actual validated regional locale (cached from
+  `checkOnce()` this run, falling back to `preferredRegion`) — every
+  `recognizer.transcribe(fileURL:locale:)` call site in
+  `ConversationLoopController` now goes through it instead of
+  constructing `Locale(identifier:)` directly. If empty-transcript
+  captures keep showing up after this, especially for a language other
+  than English, that's evidence for a genuine STT-quality issue rather
+  than this locale bug — but check `sttLocale(for:)` resolved to the
+  expected regional variant first.
 
 ### VAD & capture
 
