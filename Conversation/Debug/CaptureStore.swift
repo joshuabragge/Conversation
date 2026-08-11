@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 #if DEBUG
@@ -65,12 +66,27 @@ final class CaptureStore: ObservableObject {
             return
         }
 
+        // Measured off the copied file rather than taken from whatever
+        // format the recorder intended — the point is to catch the case
+        // where those two disagree. See `CaptureAudioInfo`'s doc comment.
+        var audioInfo: CaptureAudioInfo?
+        if let file = try? AVAudioFile(forReading: destination) {
+            let format = file.fileFormat
+            audioInfo = CaptureAudioInfo(
+                sampleRate: format.sampleRate, channels: format.channelCount,
+                durationSeconds: format.sampleRate > 0 ? Double(file.length) / format.sampleRate : 0
+            )
+        } else {
+            AppLog.error(.debugCapture, "record: couldn't reopen \(filename) to measure it — empty or malformed?")
+        }
+
         let capture = CaptureRecord(
             id: UUID(), recordedAt: Date(), audioFilename: filename,
             languagePairFirst: languagePair.first.minimalIdentifier,
             languagePairSecond: languagePair.second.minimalIdentifier,
             manualOverride: manualOverride?.minimalIdentifier,
-            languageID: languageID, transcriptAttempts: transcriptAttempts, outcome: outcome
+            languageID: languageID, transcriptAttempts: transcriptAttempts, outcome: outcome,
+            audio: audioInfo
         )
         captures.insert(capture, at: 0)
         AppLog.info(.debugCapture, "record: saved capture \(capture.id) (\(filename))")

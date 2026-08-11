@@ -69,6 +69,20 @@ extension CaptureTranscriptAttempt {
     }
 }
 
+/// The captured audio file's actual measured properties — read back off
+/// disk after the fact, not assumed from whatever format the recorder
+/// meant to use. Exists to answer "is the clip we hand Apple actually
+/// what we think it is?" directly: a duration far shorter than the
+/// utterance means writes were failing (a format mismatch is silent —
+/// `AVAudioFile.write(from:)` throws rather than crashing), and an
+/// unexpected sample rate means the route isn't what was assumed (HFP
+/// Bluetooth records at 24kHz, not 48kHz).
+struct CaptureAudioInfo: Codable, Equatable {
+    let sampleRate: Double
+    let channels: UInt32
+    let durationSeconds: Double
+}
+
 /// One recorded utterance plus everything the pipeline concluded about
 /// it — audio filename (see `CaptureStore.audioURL(for:)`), the
 /// language-ID verdict, every locale Apple's STT was actually asked to
@@ -83,5 +97,10 @@ struct CaptureRecord: Identifiable, Codable, Equatable {
     let languageID: CaptureLanguageIDInfo?
     let transcriptAttempts: [CaptureTranscriptAttempt]
     let outcome: CaptureOutcome
+    /// Optional so captures written before this field existed still
+    /// decode — `CaptureStore.load()` drops the *entire* list on any
+    /// decode failure, so a non-optional addition here would silently
+    /// wipe the existing captures it's meant to help diagnose.
+    let audio: CaptureAudioInfo?
 }
 #endif

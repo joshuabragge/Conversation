@@ -55,7 +55,27 @@ final class MicrophoneInputManager {
     /// stale-value risk.
     private var preRollBuffers: [AVAudioPCMBuffer] = []
     private let preRollLock = NSLock()
-    private let preRollCapacity = 50 // ~1.07s at 1024 frames/48kHz
+    /// Running total of `preRollBuffers`' frames, so trimming is O(1) on
+    /// the audio thread instead of re-summing the whole ring every buffer.
+    private var preRollFrames: AVAudioFrameCount = 0
+    /// How much audio to keep ahead of a confirmed utterance start —
+    /// enough to cover the VAD grace period (0.4s) plus its
+    /// `minSpeechDuration` debounce (0.15s) with margin.
+    ///
+    /// Trimmed by **duration**, not buffer count. It used to be a flat
+    /// `preRollCapacity = 50` buffers, commented as "~1.07s at 1024
+    /// frames/48kHz" — but both halves of that assumption are wrong in
+    /// practice: `installTap`'s `bufferSize: 1024` is only a *hint*
+    /// (the engine routinely delivers a different, often larger size),
+    /// and the tap now runs at the real hardware rate, which over an HFP
+    /// Bluetooth mic is 24kHz rather than 48kHz — halving the rate
+    /// doubles the duration of the same frame count. The result was
+    /// every captured clip opening with *seconds* of pre-speech silence
+    /// instead of ~1s, which is audible on playback in Settings >
+    /// Captures and is what surfaced this. Computing against the
+    /// buffers' actual sample rate makes the window correct regardless
+    /// of route or buffer size.
+    private let preRollDuration: TimeInterval = 1.0
 
     /// The actual format flowing through the tap right now, read from
     /// each buffer as it arrives (`buffer.format`) rather than queried
@@ -68,6 +88,18 @@ final class MicrophoneInputManager {
     /// the main actor) — not `preRollBuffers`' problem, since this is a
     /// single reference reassignment, not a mutable collection.
     private var currentFormat: AVAudioFormat?
+
+    /// How many `write(from:)` calls threw while recording the current
+    /// utterance. `write` throws rather than crashing when a buffer's
+    /// format doesn't match the file's, and that used to be swallowed
+    /// entirely by a bare `try?` — a silent failure mode where the file
+    /// ends up much shorter than the utterance (or empty) with nothing
+    /// anywhere saying why. Counted rather than logged per-buffer to keep
+    /// the audio thread cheap; reported once in `endUtteranceFile`. Same
+    /// benign-race trade-off as `audioFile` above (written on the audio
+    /// thread, read from the main actor) — it's a diagnostic count, so a
+    /// buffer's worth of skew doesn't matter.
+    private var writeFailures = 0
 
     /// Starts the engine and installs a tap that both forwards
     /// float-sample buffers to `onBuffer` (for VAD) and, if an utterance
@@ -89,6 +121,7 @@ final class MicrophoneInputManager {
         currentFormat = nil
         preRollLock.lock()
         preRollBuffers.removeAll()
+        preRollFrames = 0
         preRollLock.unlock()
         AppLog.debug(.mic, "stopEngine")
     }
@@ -144,23 +177,50 @@ final class MicrophoneInputManager {
 
         preRollLock.lock()
         let preRoll = preRollBuffers
+        let preRollFrameCount = preRollFrames
         preRollLock.unlock()
+        var preRollWriteFailures = 0
         for buffer in preRoll {
-            try? file.write(from: buffer)
+            do {
+                try file.write(from: buffer)
+            } catch {
+                preRollWriteFailures += 1
+            }
         }
 
+        writeFailures = preRollWriteFailures
         audioFile = file
         utteranceFileURL = url
-        AppLog.debug(.mic, "beginUtteranceFile: \(url.lastPathComponent), wrote \(preRoll.count) pre-roll buffer(s)")
+        let preRollSeconds = format.sampleRate > 0 ? Double(preRollFrameCount) / format.sampleRate : 0
+        AppLog.debug(.mic, "beginUtteranceFile: \(url.lastPathComponent), wrote \(preRoll.count) pre-roll buffer(s) = \(String(format: "%.2f", preRollSeconds))s at \(format.sampleRate)Hz\(preRollWriteFailures > 0 ? " (\(preRollWriteFailures) WRITE FAILURES)" : "")")
     }
 
     /// Stops recording and returns the file URL, or `nil` if nothing was
     /// captured (e.g. `beginUtteranceFile` failed to open the file).
+    ///
+    /// Closes the file *before* logging what landed in it, so the logged
+    /// duration/frame count reflects the finished file rather than a
+    /// still-buffered one. Those numbers matter more than they look:
+    /// `write(from:)` throws (rather than crashing) when a buffer's
+    /// format doesn't match the file's, so a silently-mismatched format
+    /// shows up only as a file far shorter than the utterance actually
+    /// was — see `installTapAndStart`'s doc comment for the related
+    /// crash this class of mismatch caused on the tap side.
     func endUtteranceFile() -> URL? {
-        defer { audioFile = nil }
+        audioFile = nil // closes/flushes the file before it's read below
         let url = utteranceFileURL
         utteranceFileURL = nil
-        AppLog.debug(.mic, "endUtteranceFile: \(url?.lastPathComponent ?? "nil")")
+        guard let url else {
+            AppLog.debug(.mic, "endUtteranceFile: nil")
+            return nil
+        }
+        if let written = try? AVAudioFile(forReading: url) {
+            let duration = written.fileFormat.sampleRate > 0
+                ? Double(written.length) / written.fileFormat.sampleRate : 0
+            AppLog.info(.mic, "endUtteranceFile: \(url.lastPathComponent) — \(written.length) frames = \(String(format: "%.2f", duration))s, \(written.fileFormat)\(writeFailures > 0 ? " (\(writeFailures) write failure(s))" : "")")
+        } else {
+            AppLog.error(.mic, "endUtteranceFile: \(url.lastPathComponent) — couldn't reopen for reading; the file may be empty or malformed")
+        }
         return url
     }
 
@@ -197,14 +257,21 @@ final class MicrophoneInputManager {
             if let copy = Self.copyBuffer(buffer) {
                 self.preRollLock.lock()
                 self.preRollBuffers.append(copy)
-                if self.preRollBuffers.count > self.preRollCapacity {
-                    self.preRollBuffers.removeFirst(self.preRollBuffers.count - self.preRollCapacity)
+                self.preRollFrames += copy.frameLength
+                let maxFrames = AVAudioFrameCount(self.preRollDuration * copy.format.sampleRate)
+                while self.preRollFrames > maxFrames, let oldest = self.preRollBuffers.first {
+                    self.preRollBuffers.removeFirst()
+                    self.preRollFrames -= oldest.frameLength
                 }
                 self.preRollLock.unlock()
             }
 
-            if self.audioFile != nil {
-                try? self.audioFile?.write(from: buffer)
+            if let audioFile = self.audioFile {
+                do {
+                    try audioFile.write(from: buffer)
+                } catch {
+                    self.writeFailures += 1
+                }
             }
             let duration = buffer.format.sampleRate > 0 ? Double(buffer.frameLength) / buffer.format.sampleRate : 0
             self.onBuffer?(AudioProcessor.convertBufferToArray(buffer: buffer), duration)

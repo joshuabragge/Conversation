@@ -24,6 +24,9 @@ struct CaptureDetailView: View {
                 if let manualOverride = capture.manualOverride {
                     LabeledContent("Manual override", value: manualOverride)
                 }
+                if let audio = capture.audio {
+                    LabeledContent("Audio", value: "\(String(format: "%.2f", audio.durationSeconds))s · \(Int(audio.sampleRate))Hz · \(audio.channels)ch")
+                }
             }
 
             if let languageID = capture.languageID {
