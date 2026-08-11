@@ -357,9 +357,17 @@ final class ConversationLoopController: ObservableObject {
         var diagnosticLanguageID: CaptureLanguageIDInfo?
         var diagnosticAttempts: [CaptureTranscriptAttempt] = []
         var captureSaved = false
-        func recordAttempt(locale: String, _ result: TranscriptionResult) {
+        // Records the *resolved* locale actually handed to
+        // `SFSpeechRecognizer` (e.g. "de-DE"), not the bare language code
+        // ("de") — those were the same string until `sttLocale(for:)`
+        // existed, and telling them apart from a capture is now the whole
+        // point: a capture showing a bare "de" means the resolution isn't
+        // being applied on that build, which is exactly the bug that
+        // produced instant empty transcripts (see CLAUDE.md).
+        func recordAttempt(language: Locale.Language, _ result: TranscriptionResult) {
             diagnosticAttempts.append(CaptureTranscriptAttempt(
-                locale: locale, text: result.text, error: result.error,
+                locale: SupportedLanguages.sttLocale(for: language).identifier,
+                text: result.text, error: result.error,
                 finishedNormally: result.finishedNormally, elapsedSeconds: result.elapsed
             ))
         }
@@ -382,7 +390,7 @@ final class ConversationLoopController: ObservableObject {
                 state = .transcribing
                 let transcript = await recognizer.transcribe(fileURL: fileURL, locale: SupportedLanguages.sttLocale(for: manualOverride))
                 #if DEBUG
-                recordAttempt(locale: manualOverride.minimalIdentifier, transcript)
+                recordAttempt(language: manualOverride, transcript)
                 #endif
                 guard let t = transcript.text, !t.isEmpty else {
                     AudioCueService.playRejected()
@@ -434,8 +442,8 @@ final class ConversationLoopController: ObservableObject {
                         fileURL: fileURL, primary: idResult.language, alternate: alternate
                     )
                     #if DEBUG
-                    recordAttempt(locale: idResult.language.minimalIdentifier, crossCheckResult.primary)
-                    recordAttempt(locale: alternate.minimalIdentifier, crossCheckResult.alternate)
+                    recordAttempt(language: idResult.language, crossCheckResult.primary)
+                    recordAttempt(language: alternate, crossCheckResult.alternate)
                     #endif
                     guard let crossChecked = crossCheckResult.winner else {
                         AudioCueService.playRejected()
@@ -450,7 +458,7 @@ final class ConversationLoopController: ObservableObject {
                 } else {
                     let primaryTranscript = await recognizer.transcribe(fileURL: fileURL, locale: SupportedLanguages.sttLocale(for: idResult.language))
                     #if DEBUG
-                    recordAttempt(locale: idResult.language.minimalIdentifier, primaryTranscript)
+                    recordAttempt(language: idResult.language, primaryTranscript)
                     #endif
                     guard let t = primaryTranscript.text, !t.isEmpty else {
                         // WhisperKit was confident about the language
