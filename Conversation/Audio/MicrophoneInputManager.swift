@@ -57,6 +57,18 @@ final class MicrophoneInputManager {
     private let preRollLock = NSLock()
     private let preRollCapacity = 50 // ~1.07s at 1024 frames/48kHz
 
+    /// The actual format flowing through the tap right now, read from
+    /// each buffer as it arrives (`buffer.format`) rather than queried
+    /// separately via `outputFormat(forBus:)` — see `installTapAndStart`'s
+    /// doc comment for the real crash a separately-queried format caused.
+    /// `beginUtteranceFile` uses this instead of its own independent
+    /// query, so the file it opens is guaranteed to match what's actually
+    /// written to it. Same benign-race trade-off as `audioFile`/
+    /// `utteranceFileURL` above (written on the audio thread, read from
+    /// the main actor) — not `preRollBuffers`' problem, since this is a
+    /// single reference reassignment, not a mutable collection.
+    private var currentFormat: AVAudioFormat?
+
     /// Starts the engine and installs a tap that both forwards
     /// float-sample buffers to `onBuffer` (for VAD) and, if an utterance
     /// file is open, writes the raw buffer to it. Retains `onBuffer` so
@@ -74,6 +86,7 @@ final class MicrophoneInputManager {
         audioEngine.inputNode.removeTap(onBus: 0)
         audioFile = nil
         utteranceFileURL = nil
+        currentFormat = nil
         preRollLock.lock()
         preRollBuffers.removeAll()
         preRollLock.unlock()
@@ -108,7 +121,17 @@ final class MicrophoneInputManager {
     /// confirmed it), then starts recording the live tap's buffers into
     /// it until `endUtteranceFile()` is called.
     func beginUtteranceFile() {
-        let format = audioEngine.inputNode.outputFormat(forBus: 0)
+        // Prefer the actually-observed tap format over a fresh
+        // `outputFormat(forBus:)` query — see `installTapAndStart`'s doc
+        // comment for why a separately-queried format isn't guaranteed to
+        // match hardware, especially right after a Bluetooth route
+        // change. A file opened with a format that doesn't match what's
+        // actually written to it would fail every `file.write(from:)`
+        // silently (see that call's `try?`) rather than crash — a
+        // quieter version of the same underlying mismatch. Falls back to
+        // a fresh query only in the unexpected case no buffer has
+        // arrived yet.
+        let format = currentFormat ?? audioEngine.inputNode.outputFormat(forBus: 0)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("caf")
@@ -143,11 +166,33 @@ final class MicrophoneInputManager {
 
     private func installTapAndStart() throws {
         let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        AppLog.debug(.mic, "installTapAndStart: format=\(format)")
+        // Deliberately `nil`, not a format queried via
+        // `outputFormat(forBus:)` a moment earlier and handed back in —
+        // that's what caused a real on-device crash
+        // ('com.apple.coreaudio.avfaudio', "Failed to create tap due to
+        // format mismatch"). Sequence from the crash log: AirPods connect
+        // (still in A2DP), `AudioSessionManager.activateListening()`
+        // switches the session to `.playAndRecord`, which kicks the
+        // accessory into HFP for recording — and *before* that Bluetooth
+        // codec renegotiation actually finished, this method queried
+        // `outputFormat(forBus:)` and got a stale 48kHz reading. By the
+        // time `installTap`'s internal validation ran a beat later, the
+        // real hardware format had already settled to HFP's 24kHz, the
+        // two didn't match, and passing an explicit format makes that a
+        // hard, Swift-uncatchable exception rather than a recoverable
+        // error. A longer/differently-timed query doesn't close this
+        // race reliably — it's inherent to querying-then-using two
+        // separate calls apart while the accessory is still renegotiating.
+        // `nil` sidesteps it entirely: the engine resolves the tap's
+        // format itself, atomically, against whatever the hardware
+        // actually is at that instant — Apple's own recommended pattern
+        // for this exact class of crash. The real per-buffer format is
+        // read from `buffer.format` below instead (see `currentFormat`).
+        AppLog.debug(.mic, "installTapAndStart: hw format=\(inputNode.outputFormat(forBus: 0))")
 
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
             guard let self else { return }
+            self.currentFormat = buffer.format
 
             if let copy = Self.copyBuffer(buffer) {
                 self.preRollLock.lock()
@@ -161,7 +206,7 @@ final class MicrophoneInputManager {
             if self.audioFile != nil {
                 try? self.audioFile?.write(from: buffer)
             }
-            let duration = format.sampleRate > 0 ? Double(buffer.frameLength) / format.sampleRate : 0
+            let duration = buffer.format.sampleRate > 0 ? Double(buffer.frameLength) / buffer.format.sampleRate : 0
             self.onBuffer?(AudioProcessor.convertBufferToArray(buffer: buffer), duration)
         }
 

@@ -185,6 +185,31 @@ capture, not from code review.
   with a cryptic OSStatus error, not a missing-voice problem. Fixed in
   `ConversationLoopController.process`: `mic.stopEngine()` before
   `activateSpeaking()`, `mic.restartEngine()` after `activateListening()`.
+- **`MicrophoneInputManager.installTapAndStart` must pass `nil` for
+  `installTap`'s `format:` parameter, never a format queried via
+  `outputFormat(forBus:)` moments earlier — doing the latter crashed the
+  app on a real device.** Sequence from the crash log: AirPods connect
+  (still in A2DP), `start()` calls `activateListening()`, which switches
+  the session to `.playAndRecord` and kicks the accessory into HFP for
+  recording — and *before* that Bluetooth codec renegotiation actually
+  finished, `installTapAndStart` queried `outputFormat(forBus:)` and got
+  a stale 48kHz reading. By the time `installTap`'s internal validation
+  ran a beat later, the real hardware format had already settled to
+  HFP's 24kHz; the two didn't match, and passing an explicit format to
+  `installTap` makes a mismatch a hard, Swift-uncatchable
+  `com.apple.coreaudio.avfaudio` exception ("Failed to create tap due to
+  format mismatch") instead of a recoverable error — an instant crash on
+  connecting headphones and tapping Start, not a graceful failure a
+  `do`/`catch` could ever have caught. A longer or differently-timed
+  query doesn't close this race reliably; it's inherent to querying and
+  using the format in two separate calls while the accessory is still
+  renegotiating. Fixed by passing `nil` instead — Apple's own recommended
+  pattern for exactly this crash — which makes `AVAudioEngine` resolve
+  the tap's format itself, atomically, against whatever the hardware
+  actually is at that instant. The real per-buffer format is read from
+  `buffer.format` inside the tap callback and cached in `currentFormat`
+  for `beginUtteranceFile` to reuse, rather than that method doing its
+  own separate (and similarly race-prone) `outputFormat(forBus:)` query.
 - **TTS being silent whenever the app isn't in the foreground was chased
   for three rounds, then the feature was retired instead of fixed — don't
   redo this work.** `AVSpeechSynthesizer` produces no audio while
