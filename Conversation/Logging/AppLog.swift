@@ -12,6 +12,11 @@ enum LogCategory: String, CaseIterable {
     case conversation = "Conversation"
     case onboarding = "Onboarding"
     case history = "History"
+    /// `CaptureStore`/`CaptureListView` — DEBUG-only capture playback and
+    /// diagnostics, see `Debug/CaptureRecord.swift`. The category still
+    /// exists in Release builds (harmless, just unused) since `AppLog`
+    /// itself isn't `#if DEBUG`-gated.
+    case debugCapture = "DebugCapture"
 }
 
 enum LogLevel: String {

@@ -264,6 +264,57 @@ capture, not from code review.
   ever resurfaces elsewhere, suspect a similar "network call before cache
   check" pattern in whatever framework is involved, not necessarily this
   exact code path again.
+- **The detection model used to only load lazily, on the first real
+  conversation turn — a real device log showed a fresh "small" model
+  download only starting *after* the user had already spoken, several
+  seconds of dead air before language-ID even began.** `AssetCheckView`'s
+  onboarding prewarm doesn't cover this: it warms its own separate
+  `LanguageIdentifier` instance, scoped to that view, which isn't the one
+  `ConversationLoopController` actually uses — and onboarding only runs
+  once, not on every later launch or after switching models in Settings.
+  Fixed with `ConversationLoopController.prewarmLanguageModel()`: fires a
+  background (non-blocking) load of the currently configured model from
+  `init` — so it starts the moment the controller exists, before the user
+  has even picked up their headphones — and again from Settings whenever
+  `whisperModelRaw` changes. `identify(fileURL:candidates:)` still calls
+  `loadedWhisperKit()` itself regardless of whether prewarming finished
+  (or started); this is a head start, not a requirement, so a slow/failed
+  prewarm just means falling back to the original lazy-load behavior
+  rather than breaking anything.
+- **A confidently-identified language whose Apple STT transcript comes
+  back empty must be rejected, not retried in the other candidate
+  locale — confirmed by a real device log after briefly trying the
+  retry and watching it produce a wrong translation with no error
+  shown.** `SFSpeechRecognizer` can complete normally (`isFinal` fires,
+  no error) with an empty `bestTranscription` for genuine speech that
+  WhisperKit was highly confident about — a known Apple STT limitation
+  on short/unclear audio, not evidence the language was misidentified.
+  A tempting fix is to retry transcription in the *other* candidate
+  locale when this happens (mirroring `crossCheckLanguage`'s handling of
+  one-empty-one-not), but forcing a recognizer to transcribe audio in
+  the wrong language doesn't fail the same way — it hallucinates
+  fluent-sounding nonsense in its own language instead of coming back
+  empty. Real device log: WhisperKit picked "de" with English literally
+  absent from its own candidate distribution (`en=missing`, as close to
+  zero probability as the model expresses) at raw log-prob -0.02 (so no
+  `needsCrossCheck` either); German STT correctly came back empty;
+  forcing English STT on the same clip confidently produced "Khasan
+  heist Tak Hota" — real English words, no error, silently translated
+  into equally nonsensical German. An occasional honest "didn't catch
+  that" is a better failure mode than a translation that's silently
+  wrong, so `ConversationLoopController.process`'s high-confidence
+  (`needsCrossCheck == false`) path rejects outright on an empty
+  transcript rather than trying the alternate locale. This is
+  deliberately *not* the same situation as `crossCheckLanguage`
+  (previous bullet): that only runs when WhisperKit's own confidence was
+  already mediocre, so weighing two real candidates against each other
+  makes sense there in a way it doesn't once WhisperKit has essentially
+  ruled the other language out. `Debug/CaptureRecord.swift`'s capture
+  page (Settings > Captures, Debug builds only) is what actually
+  surfaced the bad translation here — it logs every candidate locale's
+  raw transcript per turn, not just the winner, specifically so this
+  class of "which locale said what" question doesn't need re-deriving
+  from log lines next time.
 
 ### VAD & capture
 

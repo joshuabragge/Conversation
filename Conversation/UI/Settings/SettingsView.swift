@@ -143,6 +143,11 @@ struct SettingsView: View {
                     NavigationLink("Debug Log") {
                         DebugLogView()
                     }
+                    #if DEBUG
+                    NavigationLink("Captures") {
+                        CaptureListView()
+                    }
+                    #endif
                 }
             }
             .navigationTitle("Settings")
@@ -165,18 +170,21 @@ struct SettingsView: View {
             .onChange(of: audioCuesEnabled) { _, newValue in
                 AudioCueService.isEnabled = newValue
             }
+            .onChange(of: whisperModelRaw) { _, _ in
+                // Picking a different detection model here used to only
+                // change which model the *next* conversation turn would
+                // lazily download/load — see `ConversationLoopController.
+                // prewarmLanguageModel`'s doc comment for the real device
+                // log that showed this landing as dead air on the first
+                // spoken turn instead. Kick that off now, in the
+                // background, so it's already warm by the time there's a
+                // turn to use it.
+                controller.prewarmLanguageModel()
+            }
             .onChange(of: scenePhase) { _, newPhase in
                 if newPhase == .active {
                     voiceListRefreshToken = UUID()
                 }
-            }
-            .onAppear {
-                // See `SpeechOutputService.logAvailableVoiceInventory`'s
-                // doc comment — gives every Settings-open a fresh raw
-                // voice list in the Debug Log, so "why isn't voice X in
-                // the picker" can be checked against real device state
-                // instead of guessed at.
-                speechOutput.logAvailableVoiceInventory()
             }
             .confirmationDialog(
                 "Delete every downloaded detection model? The bundled Tiny model stays either way — this just frees up storage, you can always redownload the rest later.",

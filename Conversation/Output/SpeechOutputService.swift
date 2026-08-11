@@ -87,8 +87,15 @@ final class SpeechOutputService: NSObject, ObservableObject {
     /// extra filtering, so if a Siri-branded voice legitimately isn't
     /// appearing, this is a platform restriction, not a bug in that
     /// filter — this dump is how to confirm that on a specific device
-    /// instead of taking that on faith. Call from Settings' Voices section
-    /// so a Debug Log capture always has a fresh copy.
+    /// instead of taking that on faith. That question is already answered
+    /// (see CLAUDE.md) — this is deliberately *not* wired to any UI
+    /// anymore (it used to fire on every Settings > appear, which drowned
+    /// the Debug Log in every installed voice on the device on every
+    /// Settings visit, most of them nothing to do with the two active
+    /// languages). Left in place, unused, as the manual entry point to
+    /// reach for if the Siri-voice question ever needs revisiting —
+    /// call it from a debugger/temporary call site rather than re-wiring
+    /// it to fire automatically again.
     func logAvailableVoiceInventory() {
         let voices = AVSpeechSynthesisVoice.speechVoices()
         AppLog.info(.speechOutput, "voice inventory: \(voices.count) total installed voice(s)")

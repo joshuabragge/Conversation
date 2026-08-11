@@ -93,10 +93,49 @@ final class ConversationLoopController: ObservableObject {
         audioSession.onHeadphonesDisconnected = { [weak self] in self?.handleHeadphonesDisconnected() }
         audioSession.onInterruptionBegan = { [weak self] in self?.handleInterruptionBegan() }
         audioSession.onInterruptionEnded = { [weak self] in self?.handleInterruptionEnded() }
+
+        // Start warming the detection model the moment this controller
+        // exists — i.e. as soon as `ConversationView` is created, well
+        // before the user has picked up their headphones and tapped
+        // Start. See `prewarmLanguageModel()`'s doc comment for why this
+        // used to land on the first spoken turn instead.
+        prewarmLanguageModel()
     }
 
     func configure(translationService: TranslationService) {
         self.translationService = translationService
+    }
+
+    /// Loads (downloading first if needed) and JIT-warms the currently
+    /// configured WhisperKit model in the background, without blocking
+    /// anything. Called once from `init` so a fresh app launch starts
+    /// this immediately, and again from Settings whenever the model
+    /// selection changes.
+    ///
+    /// Without this, the cost — a real network download for anything
+    /// beyond the bundled `tiny`, plus CoreML load/compile either way —
+    /// landed on the very first turn's "Identifying language…" step
+    /// instead: a real device log showed a fresh "small" download only
+    /// starting *after* the user had already spoken and `endUtteranceFile`
+    /// fired, several seconds of silence before language-ID even began.
+    /// Onboarding's `AssetCheckView` already does something similar, but
+    /// that's a one-time, separate `LanguageIdentifier` instance scoped to
+    /// that view — it never warms the instance this controller actually
+    /// uses, and doesn't run again on a later launch or after switching
+    /// models in Settings, which is the gap this closes.
+    ///
+    /// `identify(fileURL:candidates:)` still calls `loadedWhisperKit()`
+    /// itself regardless of whether this finished (or even started) —
+    /// this is purely a head start, not a requirement, and a failure here
+    /// is silently retried there rather than surfaced as an error.
+    func prewarmLanguageModel() {
+        Task {
+            do {
+                try await languageIdentifier.prewarm()
+            } catch {
+                AppLog.error(.conversation, "prewarmLanguageModel: failed, will retry on first real use: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// Changes the active pair — only takes effect on the next `start()`;
@@ -307,6 +346,27 @@ final class ConversationLoopController: ObservableObject {
             return
         }
 
+        // DEBUG-only capture diagnostics — see `Debug/CaptureRecord.swift`.
+        // Declared before the `do` block (not inside it) so both the
+        // success path and every `catch`/`guard`-return below can reach
+        // them. `saveCapture` guards against firing twice for the same
+        // turn (e.g. a successful translate followed by a `speak()`-phase
+        // error would otherwise both try to record — only the first,
+        // more meaningful one should stick).
+        #if DEBUG
+        var diagnosticLanguageID: CaptureLanguageIDInfo?
+        var diagnosticAttempts: [CaptureTranscriptAttempt] = []
+        var captureSaved = false
+        func saveCapture(_ outcome: CaptureOutcome) {
+            guard !captureSaved else { return }
+            captureSaved = true
+            CaptureStore.shared.record(
+                sourceFileURL: fileURL, languagePair: languagePair, manualOverride: manualOverride,
+                languageID: diagnosticLanguageID, transcriptAttempts: diagnosticAttempts, outcome: outcome
+            )
+        }
+        #endif
+
         do {
             let spokenLanguage: Locale.Language
             let text: String
@@ -314,8 +374,15 @@ final class ConversationLoopController: ObservableObject {
             if let manualOverride {
                 AppLog.info(.conversation, "process: using manual override \(manualOverride.minimalIdentifier)")
                 state = .transcribing
-                guard let t = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: manualOverride.minimalIdentifier)), !t.isEmpty else {
+                let transcript = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: manualOverride.minimalIdentifier))
+                #if DEBUG
+                diagnosticAttempts.append(CaptureTranscriptAttempt(locale: manualOverride.minimalIdentifier, text: transcript))
+                #endif
+                guard let t = transcript, !t.isEmpty else {
                     AudioCueService.playRejected()
+                    #if DEBUG
+                    saveCapture(.rejected("manual override (\(manualOverride.minimalIdentifier)): empty transcript"))
+                    #endif
                     await showRejectedThenResumeListening()
                     return
                 }
@@ -333,8 +400,17 @@ final class ConversationLoopController: ObservableObject {
                         fileURL: fileURL, candidates: self.languagePair.languages
                     )
                 }
+                #if DEBUG
+                diagnosticLanguageID = CaptureLanguageIDInfo(
+                    pickedLanguage: idResult.language.minimalIdentifier, confidence: idResult.confidence,
+                    rawLogProb: idResult.rawLogProb, needsCrossCheck: idResult.needsCrossCheck
+                )
+                #endif
                 guard idResult.isConfident else {
                     AudioCueService.playRejected()
+                    #if DEBUG
+                    saveCapture(.rejected("language-ID confidence too low (\(idResult.confidence))"))
+                    #endif
                     await showRejectedThenResumeListening()
                     return
                 }
@@ -348,18 +424,74 @@ final class ConversationLoopController: ObservableObject {
                     // Double-check against Apple's own STT in the other
                     // candidate locale before committing.
                     let alternate = languagePair.other(than: idResult.language)
-                    guard let crossChecked = await crossCheckLanguage(
+                    let crossCheckResult = await crossCheckLanguage(
                         fileURL: fileURL, primary: idResult.language, alternate: alternate
-                    ) else {
+                    )
+                    #if DEBUG
+                    diagnosticAttempts.append(CaptureTranscriptAttempt(locale: idResult.language.minimalIdentifier, text: crossCheckResult.primaryText))
+                    diagnosticAttempts.append(CaptureTranscriptAttempt(locale: alternate.minimalIdentifier, text: crossCheckResult.alternateText))
+                    #endif
+                    guard let crossChecked = crossCheckResult.winner else {
                         AudioCueService.playRejected()
+                        #if DEBUG
+                        saveCapture(.rejected("cross-check: empty transcript in both \(idResult.language.minimalIdentifier) and \(alternate.minimalIdentifier)"))
+                        #endif
                         await showRejectedThenResumeListening()
                         return
                     }
                     spokenLanguage = crossChecked.language
                     text = crossChecked.text
                 } else {
-                    guard let t = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: idResult.language.minimalIdentifier)), !t.isEmpty else {
+                    let primaryTranscript = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: idResult.language.minimalIdentifier))
+                    #if DEBUG
+                    diagnosticAttempts.append(CaptureTranscriptAttempt(locale: idResult.language.minimalIdentifier, text: primaryTranscript))
+                    #endif
+                    guard let t = primaryTranscript, !t.isEmpty else {
+                        // WhisperKit was confident about the language
+                        // (that's why we're in this branch, not the
+                        // cross-check one above), but Apple's on-device
+                        // STT still came back with an empty transcript for
+                        // it — a real device log showed this happening for
+                        // genuine speech (isFinal fired normally, no
+                        // error, just ""), not only for a false VAD
+                        // trigger.
+                        //
+                        // A previous version of this code retried
+                        // transcription in the *other* candidate locale
+                        // here instead of rejecting outright, on the
+                        // theory that a correctly-identified language
+                        // shouldn't still get rejected. That was the wrong
+                        // trade: a real device log then showed WhisperKit
+                        // confidently picking "de" with English entirely
+                        // absent from its own candidate distribution
+                        // (`en=missing`, i.e. as close to zero probability
+                        // as the model expresses), German STT correctly
+                        // coming back empty, and *English* STT — forced to
+                        // transcribe German audio it was never a
+                        // plausible candidate for — confidently producing
+                        // "Khasan heist Tak Hota": real English dictionary
+                        // words strung into a nonsense phrase. That then
+                        // translated into equally nonsensical German with
+                        // no error shown anywhere. Forced wrong-locale STT
+                        // doesn't fail loudly like an empty transcript
+                        // does; it hallucinates fluent-sounding garbage in
+                        // its own language instead, so "we got *some* text
+                        // back" isn't evidence the guess was right.
+                        // Between an occasional honest "didn't catch
+                        // that" and a silently wrong translation, the
+                        // former is the safer failure mode — don't
+                        // reintroduce an other-locale retry here. (The
+                        // `needsCrossCheck` branch above is different: it
+                        // only runs when WhisperKit's own confidence was
+                        // already mediocre, so weighing two real
+                        // candidates against each other via
+                        // `languagePlausibility` makes sense there in a
+                        // way it doesn't once WhisperKit has already all
+                        // but ruled the other language out.)
                         AudioCueService.playRejected()
+                        #if DEBUG
+                        saveCapture(.rejected("empty transcript in \(idResult.language.minimalIdentifier) (confident LID — not retrying the other locale, see ConversationLoopController.process)"))
+                        #endif
                         await showRejectedThenResumeListening()
                         return
                     }
@@ -378,6 +510,12 @@ final class ConversationLoopController: ObservableObject {
                 try await translationService.translate(text, from: spokenLanguage, to: targetLanguage)
             }
             translatedText = translated
+            #if DEBUG
+            saveCapture(.accepted(
+                spokenLanguage: spokenLanguage.minimalIdentifier, heardText: text,
+                translatedLanguage: targetLanguage.minimalIdentifier, translatedText: translated
+            ))
+            #endif
             history.append(ConversationTurn(
                 heardText: text, heardLanguage: spokenLanguage,
                 translatedText: translated, translatedLanguage: targetLanguage
@@ -427,8 +565,14 @@ final class ConversationLoopController: ObservableObject {
             AudioCueService.playBackToListening()
             state = .listening
         } catch is TimeoutError {
+            #if DEBUG
+            saveCapture(.error("timed out"))
+            #endif
             await showErrorThenResumeListening("Timed out — check your network connection for first-time setup, then try again.")
         } catch {
+            #if DEBUG
+            saveCapture(.error(error.localizedDescription))
+            #endif
             await showErrorThenResumeListening(error.localizedDescription)
         }
     }
@@ -448,28 +592,37 @@ final class ConversationLoopController: ObservableObject {
     /// This is a heuristic, not a guarantee — `NLLanguageRecognizer` is
     /// itself known to be less reliable on very short phrases. Treat this
     /// as one more (differently-biased) opinion, not a solved problem.
+    ///
+    /// Returns both raw transcripts alongside the winner (rather than just
+    /// the winner) so callers building a `CaptureRecord` (DEBUG builds
+    /// only, see `Debug/CaptureRecord.swift`) can show what each candidate
+    /// locale actually produced, not just whichever one this method picked —
+    /// plain `String?`s rather than the DEBUG-only `CaptureTranscriptAttempt`
+    /// type, so this method itself doesn't need `#if DEBUG` gating.
     private func crossCheckLanguage(
         fileURL: URL, primary: Locale.Language, alternate: Locale.Language
-    ) async -> (language: Locale.Language, text: String)? {
+    ) async -> (winner: (language: Locale.Language, text: String)?, primaryText: String?, alternateText: String?) {
         AppLog.info(.conversation, "crossCheckLanguage: verifying \(primary.minimalIdentifier) against \(alternate.minimalIdentifier)")
         let primaryText = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: primary.minimalIdentifier))
         let alternateText = await recognizer.transcribe(fileURL: fileURL, locale: Locale(identifier: alternate.minimalIdentifier))
         AppLog.info(.conversation, "crossCheckLanguage: \(primary.minimalIdentifier)=\"\(primaryText ?? "nil")\" \(alternate.minimalIdentifier)=\"\(alternateText ?? "nil")\"")
 
+        let winner: (language: Locale.Language, text: String)?
         switch (primaryText, alternateText) {
         case (nil, nil):
-            return nil
+            winner = nil
         case (let p?, nil):
-            return (primary, p)
+            winner = (primary, p)
         case (nil, let a?):
-            return (alternate, a)
+            winner = (alternate, a)
         case (let p?, let a?):
             let candidates = [primary, alternate]
             let primaryScore = Self.languagePlausibility(of: p, expected: primary, among: candidates)
             let alternateScore = Self.languagePlausibility(of: a, expected: alternate, among: candidates)
             AppLog.info(.conversation, "crossCheckLanguage: plausibility \(primary.minimalIdentifier)=\(primaryScore) \(alternate.minimalIdentifier)=\(alternateScore)")
-            return alternateScore > primaryScore ? (alternate, a) : (primary, p)
+            winner = alternateScore > primaryScore ? (alternate, a) : (primary, p)
         }
+        return (winner, primaryText, alternateText)
     }
 
     /// How much `text` reads like real `expected`-language text, per
