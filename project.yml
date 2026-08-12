@@ -46,7 +46,13 @@ targets:
       path: Conversation/Resources/Info.plist
       properties:
         NSMicrophoneUsageDescription: "Conversation listens through your headphones' mic to hear what you say and translate it."
-        NSSpeechRecognitionUsageDescription: "Conversation transcribes your speech on-device to translate it between your two chosen languages."
+        # Deliberately doesn't promise on-device unconditionally: it's the
+        # default and what happens unless the user turns on "Allow Apple's
+        # servers" in Settings (see RecognitionConfig.allowServerBasedRecognition),
+        # which exists because some locales have no usable offline
+        # dictation model. Claiming speech never leaves the device would be
+        # inaccurate for anyone who needs that setting.
+        NSSpeechRecognitionUsageDescription: "Conversation transcribes your speech to translate it between your two chosen languages. This happens on-device by default; you can optionally allow Apple's servers in Settings if a language has no offline dictation model."
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

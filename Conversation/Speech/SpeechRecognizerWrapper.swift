@@ -29,9 +29,9 @@ struct TranscriptionResult: Equatable {
     /// timeout, not necessarily empty.
     let finishedNormally: Bool
     let elapsed: TimeInterval
-    /// Whether this ran with `requiresOnDeviceRecognition` — always true
-    /// in a Release build; false only when the DEBUG-only
-    /// `RecognitionConfig.allowServerBasedRecognition` diagnostic is on.
+    /// Whether this ran restricted to on-device recognition — false when
+    /// the user has opted into `RecognitionConfig.allowServerBasedRecognition`,
+    /// in which case the audio may have been sent to Apple's servers.
     let onDevice: Bool
 }
 
@@ -57,15 +57,11 @@ final class SpeechRecognizerWrapper: ObservableObject {
     /// way and falls back to whatever's been transcribed so far.
     func transcribe(fileURL: URL, locale: Locale) async -> TranscriptionResult {
         let start = Date()
-        // DEBUG-only diagnostic escape hatch — see
-        // `RecognitionConfig.allowServerBasedRecognition`. Always false in
-        // a Release build, where this compiles down to the original
-        // on-device-only behaviour.
-        #if DEBUG
+        // Defaults to on-device-only; the user can opt into letting Apple's
+        // servers handle it in Settings, which is the only workaround when
+        // a locale's offline recognition asset isn't actually usable —
+        // see `RecognitionConfig.allowServerBasedRecognition`.
         let requiresOnDevice = !RecognitionConfig.allowServerBasedRecognition
-        #else
-        let requiresOnDevice = true
-        #endif
         AppLog.info(.transcription, "transcribe: starting for \(fileURL.lastPathComponent) in \(locale.identifier) (requiresOnDevice=\(requiresOnDevice))")
 
         guard let recognizer = SFSpeechRecognizer(locale: locale) else {

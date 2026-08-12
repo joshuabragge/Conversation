@@ -3,10 +3,12 @@
 A hands-free iOS translation app for practicing a language solo, on a walk,
 with headphones: speak either of two chosen languages, it detects which one,
 translates it, and speaks the result back through the headphones — on-device
-after first-run setup. Deliberately foreground-only (see the Audio session &
-background section below for why): the app disables the idle timer while a
-session is running instead of trying to keep working with the screen locked.
-See `README.md` for the full pitch and architecture.
+after first-run setup (the one exception is opt-in and off by default: see
+`RecognitionConfig.allowServerBasedRecognition`, for languages iOS has no
+usable offline dictation model for). Deliberately foreground-only (see the
+Audio session & background section below for why): the app disables the idle
+timer while a session is running instead of trying to keep working with the
+screen locked. See `README.md` for the full pitch and architecture.
 
 ## Commands
 
@@ -369,6 +371,37 @@ capture, not from code review.
   than English, that's evidence for a genuine STT-quality issue rather
   than this locale bug — but check `sttLocale(for:)` resolved to the
   expected regional variant first.
+- **RESOLVED — the empty transcripts above were a missing on-device
+  recognition asset, and `supportsOnDeviceRecognition` reporting `true`
+  does not mean one is actually usable.** The locale fix and the
+  oversized-pre-roll fix in the two entries above were both real bugs
+  worth keeping, but neither was the cause. Confirmed by A/B on a real
+  device: with `requiresOnDeviceRecognition` dropped, the *same* speech
+  in the *same* language transcribed fine every time; restricted to
+  on-device it came back empty, completing normally in well under half a
+  second — the recognizer wasn't failing to understand the audio, it had
+  nothing to run. Two things made this hard to see and are the actual
+  lesson: (1) `supportsOnDeviceRecognition` returned `true` for the
+  locale throughout, so there is **no reliable way to detect this case up
+  front** and adapt automatically; and (2) it fails identically to "the
+  user said nothing" — an empty transcript, no error, no timeout. The
+  misleading comparison, worth not repeating: iOS's own keyboard
+  dictation transcribed the same speech every time, which *looks* like
+  proof the audio was fine and the app was at fault, but the keyboard may
+  use Apple's servers and follows the user's selected dictation language
+  — it was never running the same code path. Resolution:
+  `RecognitionConfig.allowServerBasedRecognition` (Settings >
+  Transcription > "Allow Apple's servers"), **off by default**, lets the
+  user opt into server-based recognition when a language has no working
+  offline model. Deliberately not on by default and deliberately not an
+  automatic retry after an empty on-device result — either would quietly
+  send recordings off-device for a user who chose this app precisely
+  because it doesn't. The better fix where it's available is installing
+  the offline asset (Settings > General > Keyboard > Dictation Languages,
+  plus Language & Region), which the Settings copy points at. When
+  diagnosing any future "clearly-spoken audio, empty transcript" report,
+  check this first — it's cheap to test with the toggle and was the
+  answer once already.
 
 ### VAD & capture
 

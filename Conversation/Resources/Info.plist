@@ -21,7 +21,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Conversation listens through your headphones' mic to hear what you say and translate it.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Conversation transcribes your speech on-device to translate it between your two chosen languages.</string>
+	<string>Conversation transcribes your speech to translate it between your two chosen languages. This happens on-device by default; you can optionally allow Apple's servers in Settings if a language has no offline dictation model.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

@@ -10,7 +10,8 @@ headphone mic, and Google's needs network and handles headphone audio
 routing poorly. This app is narrower and more specific: pick two languages
 once, then just talk — in either language, in any order — and hear the
 translation spoken back through your headphones, with no button presses and
-no network once initial setup is done. The app is deliberately
+no network once initial setup is done (with one opt-in exception, off by
+default — see [Allowing Apple's servers](#allowing-apples-servers)). The app is deliberately
 foreground-only — see "Why the app is foreground-only" below — so instead of
 trying to keep working with the screen locked, it just keeps the screen
 awake for as long as a session is running.
@@ -25,7 +26,9 @@ awake for as long as a session is running.
    in both candidate locales and compared for which one actually reads as
    plausible text — before committing to an answer.
 3. **Transcribe.** Apple's on-device `Speech` framework transcribes that
-   clip in the now-known-correct locale.
+   clip in the now-known-correct locale. If iOS has no usable offline
+   dictation model for one of your languages, this silently produces
+   nothing — see "Allowing Apple's servers" below for the opt-in fallback.
 4. **Translate.** Apple's `Translation` framework translates it to the
    other language.
 5. **Speak it back.** `AVSpeechSynthesizer` speaks the translation, with the
@@ -298,6 +301,37 @@ language-ID for any pair that isn't English-only. The binary model files
 themselves are tracked via **Git LFS**, not plain git blobs — see Setup
 above.
 
+### Allowing Apple's servers
+
+**Settings > Transcription > "Allow Apple's servers" — off by default.**
+Everything else in this app runs on-device; this is the one setting that
+can send your recordings off it, and it exists because the offline path
+isn't always actually available.
+
+Apple's `Speech` framework can be restricted to on-device recognition
+(`requiresOnDeviceRecognition`), which is what this app does by default.
+But a language can be listed as supported, report
+`supportsOnDeviceRecognition == true`, and still have no usable offline
+model installed — in which case transcription returns an **empty string,
+with no error and no timeout**, indistinguishable from the user not
+having said anything. This was confirmed on a real device: the same
+German speech transcribed perfectly with server-based recognition
+allowed, and came back empty every time when restricted to on-device,
+completing in well under half a second. Because `supportsOnDeviceRecognition`
+lies about it, there's no reliable way for the app to detect this and
+adapt on its own.
+
+So it's a user-facing toggle rather than an automatic fallback. It's
+deliberately **not** on by default, and deliberately **not** an automatic
+retry after an empty on-device result — either would quietly send audio
+off-device for someone who picked this app specifically because it
+doesn't. Turning it on also means transcription needs a network
+connection, which undercuts the offline-on-a-walk premise.
+
+Where it's available, the better fix is installing the offline model
+instead: **Settings > General > Keyboard > Dictation Languages**, and add
+the language under **Language & Region**. Then turn the setting back off.
+
 ### Why the app is foreground-only
 
 An earlier version declared `UIBackgroundModes: audio` so the mic,
@@ -400,6 +434,14 @@ the checklist below.
   exposes the two thresholds that control this (noise rejection level,
   minimum sound duration) as live knobs, but the real fix if that's not
   enough is a dedicated sound classifier ahead of VAD (see `CLAUDE.md`).
+- **A language can report on-device STT support it doesn't actually have.**
+  `supportsOnDeviceRecognition` returning `true` doesn't guarantee a usable
+  offline model exists; when one doesn't, transcription returns an empty
+  string with no error, indistinguishable from silence. There's no API to
+  detect this up front, so the only mitigation is the opt-in
+  [Allow Apple's servers](#allowing-apples-servers) setting — which trades
+  away both the offline and the on-device properties. Confirmed on a real
+  device for German.
 - **No programmatic way to install a missing on-device STT locale, TTS
   voice, or force a specific Translation pack download** — the app can only
   point the user at Settings for any of these. Siri's own voice specifically
@@ -482,6 +524,21 @@ Share button there to export the log as text. This is how essentially
 every bug in `CLAUDE.md` past the first few was actually root-caused —
 default to grabbing a log capture before guessing at a fix for anything
 that only shows up on a real device.
+
+Debug builds additionally get **Settings > Debugging > Captures**: the last
+20 recorded utterances, each replayable in-app alongside everything the
+pipeline concluded about it — the measured audio (duration, sample rate,
+channels), WhisperKit's language-ID verdict and confidence, every candidate
+locale Apple's STT was actually asked to transcribe and what each returned
+(including whether it finished normally or hit the fallback timeout, and
+whether it ran on-device), and the final outcome. Being able to hear a clip
+while looking at what each locale made of it is what separated "our audio is
+broken" from "the offline recognition model is missing" — see `CLAUDE.md`.
+
+If clearly-spoken audio produces an empty transcript, check
+[Allowing Apple's servers](#allowing-apples-servers) first — a missing
+offline dictation model is silent, gives no error, and has been the answer
+before.
 
 ## License
 

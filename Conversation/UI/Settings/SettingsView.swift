@@ -32,12 +32,9 @@ struct SettingsView: View {
     @AppStorage("com.joshuabragge.Conversation.vadSpeechThreshold") private var vadSpeechThreshold = 0.18
     @AppStorage("com.joshuabragge.Conversation.vadMinSpeechDuration") private var vadMinSpeechDuration = 0.15
     @State private var confirmDeleteAllModels = false
-    #if DEBUG
     // Same key as RecognitionConfig.allowServerBasedRecognition — see its
-    // doc comment for what this actually trades away, and why it's a
-    // DEBUG-only diagnostic rather than a user-facing fallback option.
+    // doc comment for what this trades away and why it stays opt-in.
     @AppStorage("com.joshuabragge.Conversation.allowServerBasedRecognition") private var allowServerBasedRecognition = false
-    #endif
 
     init(pair: LanguagePair, controller: ConversationLoopController) {
         self.pair = pair
@@ -99,6 +96,21 @@ struct SettingsView: View {
                     Toggle("Ready chime", isOn: $audioCuesEnabled)
                 }
 
+                Section {
+                    Toggle("Allow Apple's servers", isOn: $allowServerBasedRecognition)
+                    Text("Off by default — your speech is transcribed entirely on this device and never leaves it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Turn this on if one of your languages is often missed or comes back as \u{201C}Didn't catch that\u{201D} even when you spoke clearly. That usually means iOS doesn't have a working offline dictation model for it, and letting Apple's servers transcribe instead is the only way around that. **Your recordings can leave the device while this is on, and it needs a network connection.**")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("The better fix, when it's available: add the language under Settings > General > Keyboard > Dictation Languages, and under Language & Region — then turn this back off.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Transcription")
+                }
+
 
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
@@ -153,10 +165,6 @@ struct SettingsView: View {
                     NavigationLink("Captures") {
                         CaptureListView()
                     }
-                    Toggle("Allow server-based speech recognition", isOn: $allowServerBasedRecognition)
-                    Text("Diagnostic only. **Sends your recorded speech to Apple's servers** instead of transcribing entirely on-device — leave this off unless you're specifically testing whether an empty transcript is caused by a missing offline recognition model for that language. Debug builds only; never shipped.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     #endif
                 }
             }
