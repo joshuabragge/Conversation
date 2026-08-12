@@ -368,7 +368,8 @@ final class ConversationLoopController: ObservableObject {
             diagnosticAttempts.append(CaptureTranscriptAttempt(
                 locale: SupportedLanguages.sttLocale(for: language).identifier,
                 text: result.text, error: result.error,
-                finishedNormally: result.finishedNormally, elapsedSeconds: result.elapsed
+                finishedNormally: result.finishedNormally, elapsedSeconds: result.elapsed,
+                onDevice: result.onDevice
             ))
         }
         func saveCapture(_ outcome: CaptureOutcome) {

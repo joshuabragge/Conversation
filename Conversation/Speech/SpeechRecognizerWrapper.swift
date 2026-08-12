@@ -29,6 +29,10 @@ struct TranscriptionResult: Equatable {
     /// timeout, not necessarily empty.
     let finishedNormally: Bool
     let elapsed: TimeInterval
+    /// Whether this ran with `requiresOnDeviceRecognition` — always true
+    /// in a Release build; false only when the DEBUG-only
+    /// `RecognitionConfig.allowServerBasedRecognition` diagnostic is on.
+    let onDevice: Bool
 }
 
 /// One-shot on-device transcription of an already-recorded utterance file,
@@ -53,12 +57,33 @@ final class SpeechRecognizerWrapper: ObservableObject {
     /// way and falls back to whatever's been transcribed so far.
     func transcribe(fileURL: URL, locale: Locale) async -> TranscriptionResult {
         let start = Date()
-        AppLog.info(.transcription, "transcribe: starting for \(fileURL.lastPathComponent) in \(locale.identifier)")
-        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.supportsOnDeviceRecognition else {
+        // DEBUG-only diagnostic escape hatch — see
+        // `RecognitionConfig.allowServerBasedRecognition`. Always false in
+        // a Release build, where this compiles down to the original
+        // on-device-only behaviour.
+        #if DEBUG
+        let requiresOnDevice = !RecognitionConfig.allowServerBasedRecognition
+        #else
+        let requiresOnDevice = true
+        #endif
+        AppLog.info(.transcription, "transcribe: starting for \(fileURL.lastPathComponent) in \(locale.identifier) (requiresOnDevice=\(requiresOnDevice))")
+
+        guard let recognizer = SFSpeechRecognizer(locale: locale) else {
+            let message = "No speech recognizer for \(locale.identifier)."
+            AppLog.error(.transcription, "transcribe: \(message)")
+            errorMessage = message
+            return TranscriptionResult(text: nil, error: message, finishedNormally: false, elapsed: Date().timeIntervalSince(start), onDevice: requiresOnDevice)
+        }
+        // Only a hard requirement when actually demanding on-device work:
+        // this guard used to run unconditionally, which would have made
+        // the server-based diagnostic above untestable on exactly the
+        // locales worth testing it on (one whose offline asset is
+        // missing is precisely the case that reports `false` here).
+        guard recognizer.supportsOnDeviceRecognition || !requiresOnDevice else {
             let message = "On-device recognition isn't available for \(locale.identifier)."
             AppLog.error(.transcription, "transcribe: \(message)")
             errorMessage = message
-            return TranscriptionResult(text: nil, error: message, finishedNormally: false, elapsed: Date().timeIntervalSince(start))
+            return TranscriptionResult(text: nil, error: message, finishedNormally: false, elapsed: Date().timeIntervalSince(start), onDevice: requiresOnDevice)
         }
 
         isTranscribing = true
@@ -66,7 +91,7 @@ final class SpeechRecognizerWrapper: ObservableObject {
         defer { isTranscribing = false }
 
         let request = SFSpeechURLRecognitionRequest(url: fileURL)
-        request.requiresOnDeviceRecognition = true
+        request.requiresOnDeviceRecognition = requiresOnDevice
 
         var latestText = ""
         var taskError: String?
@@ -109,7 +134,7 @@ final class SpeechRecognizerWrapper: ObservableObject {
         AppLog.info(.transcription, "transcribe: result=\"\(latestText)\" finishedNormally=\(!finishedViaFallback) elapsed=\(elapsed)s")
         return TranscriptionResult(
             text: latestText.isEmpty ? nil : latestText, error: taskError,
-            finishedNormally: !finishedViaFallback, elapsed: elapsed
+            finishedNormally: !finishedViaFallback, elapsed: elapsed, onDevice: requiresOnDevice
         )
     }
 }

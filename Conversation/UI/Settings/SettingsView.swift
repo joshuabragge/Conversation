@@ -32,6 +32,12 @@ struct SettingsView: View {
     @AppStorage("com.joshuabragge.Conversation.vadSpeechThreshold") private var vadSpeechThreshold = 0.18
     @AppStorage("com.joshuabragge.Conversation.vadMinSpeechDuration") private var vadMinSpeechDuration = 0.15
     @State private var confirmDeleteAllModels = false
+    #if DEBUG
+    // Same key as RecognitionConfig.allowServerBasedRecognition — see its
+    // doc comment for what this actually trades away, and why it's a
+    // DEBUG-only diagnostic rather than a user-facing fallback option.
+    @AppStorage("com.joshuabragge.Conversation.allowServerBasedRecognition") private var allowServerBasedRecognition = false
+    #endif
 
     init(pair: LanguagePair, controller: ConversationLoopController) {
         self.pair = pair
@@ -147,6 +153,10 @@ struct SettingsView: View {
                     NavigationLink("Captures") {
                         CaptureListView()
                     }
+                    Toggle("Allow server-based speech recognition", isOn: $allowServerBasedRecognition)
+                    Text("Diagnostic only. **Sends your recorded speech to Apple's servers** instead of transcribing entirely on-device — leave this off unless you're specifically testing whether an empty transcript is caused by a missing offline recognition model for that language. Debug builds only; never shipped.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     #endif
                 }
             }

@@ -187,6 +187,41 @@ enum RecognitionConfig {
     /// been transcribed (see the M4 AirPods finding).
     static let transcriptionFallbackTimeout: TimeInterval = 5.0
 
+    #if DEBUG
+    private static let allowServerBasedRecognitionKey = "com.joshuabragge.Conversation.allowServerBasedRecognition"
+
+    /// **Diagnostic only — DEBUG builds, off by default.** When true,
+    /// `SpeechRecognizerWrapper.transcribe` drops
+    /// `requiresOnDeviceRecognition`, letting `SFSpeechRecognizer` fall
+    /// back to Apple's servers.
+    ///
+    /// Exists to settle one question the app's own logs can't answer:
+    /// whether repeated empty transcripts for clearly-audible,
+    /// correctly-identified speech are our audio's fault or the on-device
+    /// recognition asset's. The comparison that motivated it — iOS's own
+    /// keyboard dictation transcribes the same speech every time — was
+    /// never a like-for-like test, because the keyboard is free to use
+    /// Apple's servers and follows the user's selected dictation language,
+    /// so it never ran the code path this app does.
+    /// `supportsOnDeviceRecognition` returning `true` is *not* a guarantee
+    /// that a locale's offline asset is actually present and usable, which
+    /// is what this toggle tests. If transcripts start working with it on,
+    /// the audio pipeline is fine and the missing piece is that asset
+    /// (check Settings > General > Keyboard > Dictation Languages, and
+    /// Language & Region).
+    ///
+    /// **Turning this on sends recorded speech to Apple's servers**,
+    /// contradicting the app's entirely-on-device premise — which is
+    /// exactly why it's `#if DEBUG`, defaults to `false` (`UserDefaults.
+    /// bool(forKey:)` returns `false` when unset), and is labelled as a
+    /// diagnostic in Settings rather than offered as a normal option. Not
+    /// a candidate for shipping as a "fallback when on-device fails."
+    static var allowServerBasedRecognition: Bool {
+        get { UserDefaults.standard.bool(forKey: allowServerBasedRecognitionKey) }
+        set { UserDefaults.standard.set(newValue, forKey: allowServerBasedRecognitionKey) }
+    }
+    #endif
+
     /// How long to wait on a `TranslationSession` call before treating it
     /// as stuck (see the M2 zero-size-host-view finding).
     static let translationTimeout: TimeInterval = 20.0

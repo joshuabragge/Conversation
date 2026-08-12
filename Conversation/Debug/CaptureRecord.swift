@@ -28,6 +28,14 @@ struct CaptureTranscriptAttempt: Codable, Equatable {
     /// `SpeechRecognizerWrapper.TranscriptionResult`'s doc comment.
     let finishedNormally: Bool
     let elapsedSeconds: Double
+    /// Whether this attempt actually ran on-device, per
+    /// `RecognitionConfig.allowServerBasedRecognition`. Recorded per
+    /// attempt so an A/B between the two modes stays legible after the
+    /// fact — otherwise captures from before and after flipping that
+    /// toggle look identical, which defeats the point of the experiment.
+    /// Optional for the same backward-compatibility reason as
+    /// `CaptureRecord.audio`.
+    let onDevice: Bool?
 }
 
 /// WhisperKit's language-ID verdict for a capture — `nil` on the

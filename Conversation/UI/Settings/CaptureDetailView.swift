@@ -101,6 +101,11 @@ private struct TranscriptAttemptRow: View {
             Text(timingText)
                 .font(.caption2)
                 .foregroundStyle(timingColor)
+            if attempt.onDevice == false {
+                Text("⚠️ server-based recognition (not on-device)")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
             if let error = attempt.error {
                 Text("Error: \(error)")
                     .font(.caption2)
