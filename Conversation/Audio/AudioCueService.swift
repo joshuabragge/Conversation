@@ -43,7 +43,7 @@ enum AudioCueService {
         guard isEnabled else { return }
         let data = ToneGenerator.wavData(frequency: frequency, duration: duration)
         guard let player = try? AVAudioPlayer(data: data) else { return }
-        player.volume = 0.6
+        player.volume = 0.4
         activePlayers.append(player)
         player.play()
         DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.3) {

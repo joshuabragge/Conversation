@@ -50,9 +50,9 @@ enum WhisperModelOption: String, CaseIterable, Identifiable {
     case tiny
     case base
     case small
-    case medium
+    /*case medium
     case largev2
-    case largev3
+    case largev3*/
 
     var id: String { rawValue }
 
@@ -67,9 +67,9 @@ enum WhisperModelOption: String, CaseIterable, Identifiable {
         case .tiny: return "tiny"
         case .base: return "base"
         case .small: return "small"
-        case .medium: return "medium"
+        /*case .medium: return "medium"
         case .largev2: return "large-v2"
-        case .largev3: return "large-v3"
+        case .largev3: return "large-v3"*/
         }
     }
 
@@ -90,12 +90,12 @@ enum WhisperModelOption: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .tiny: return "Tiny (~75MB, fastest, bundled)"
-        case .base: return "Base (~150MB, likely more accurate)"
-        case .small: return "Small (~500MB, slower)"
-        case .medium: return "Medium (~1.5GB, slower still, unverified for real-time use)"
+        case .tiny: return "Standard (~75MB)"
+        case .base: return "Bigger (~150MB)"
+        case .small: return "Biggest (~500MB)"
+        /*case .medium: return "Medium (~1.5GB, slower still, unverified for real-time use)"
         case .largev2: return "Large v2 (~3.1GB, likely too slow for a quick LID pass)"
-        case .largev3: return "Large v3 (~3.1GB, likely too slow for a quick LID pass)"
+        case .largev3: return "Large v3 (~3.1GB, likely too slow for a quick LID pass)"*/
         }
     }
 }

@@ -97,14 +97,8 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Toggle("Allow Apple's servers", isOn: $allowServerBasedRecognition)
-                    Text("Off by default — your speech is transcribed entirely on this device and never leaves it.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Turn this on if one of your languages is often missed or comes back as \u{201C}Didn't catch that\u{201D} even when you spoke clearly. That usually means iOS doesn't have a working offline dictation model for it, and letting Apple's servers transcribe instead is the only way around that. **Your recordings can leave the device while this is on, and it needs a network connection.**")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("The better fix, when it's available: add the language under Settings > General > Keyboard > Dictation Languages, and under Language & Region — then turn this back off.")
+                    Toggle("Use Apple's servers", isOn: $allowServerBasedRecognition)
+                    Text("Improves results by letting the device use Apple's transcription services.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: {
@@ -142,12 +136,6 @@ struct SettingsView: View {
                     ForEach(WhisperModelOption.allCases) { option in
                         WhisperModelRowView(model: option, manager: modelManager)
                     }
-                    Text("Small and up are untested in this app — they're built for full transcription quality, not a quick language-ID pass, so they may be too slow to be worth using here. Try at your own pace; the default stays Tiny.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Swipe a downloaded model to delete just that one.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     if hasDeletableModels {
                         Button("Delete Downloaded Models", role: .destructive) {
                             confirmDeleteAllModels = true

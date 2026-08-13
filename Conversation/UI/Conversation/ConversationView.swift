@@ -35,12 +35,19 @@ struct ConversationView: View {
                         .frame(width: 300)
                         .frame(maxHeight: .infinity)
                         .background(.background)
+                        .ignoresSafeArea(edges: .horizontal)
 /*                        .ignoresSafeArea(edges: .vertical)*/
                         .transition(.move(edge: .leading))
                 }
             }
             .animation(.easeInOut(duration: 0.25), value: showHistory)
-            .navigationTitle("Conversation")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("Widerhall")
+                        .font(.headline)
+                }
+            }
             /*.navigationTitle("\(pair.first.displayName) ⇄ \(pair.second.displayName)")*/
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -50,13 +57,16 @@ struct ConversationView: View {
                         Image(systemName: "line.3.horizontal")
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
+                if showHistory != true {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showSettings = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                        }
                     }
                 }
+                
             }
             .sheet(isPresented: $showSettings) {
                 SettingsView(pair: pair, controller: controller)
@@ -86,7 +96,7 @@ struct ConversationView: View {
         VStack(spacing: 12) {
             Spacer()
             HStack {
-
+                Spacer()
                 LanguageChipView(pair: pair, selection: $controller.manualOverride)
                 Spacer()
             }
@@ -122,19 +132,33 @@ struct ConversationView: View {
                         .fill(isRunning ? Color.red : Color.accentColor)
                         .frame(width: 88, height: 88)
                         .overlay {
-                            Image(systemName: isRunning ? "waveform" : "waveform")
+                            /*Image(systemName: isRunning ? "waveform" : "waveform")
                                 .font(.system(size: 48))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(.white)*/
+                                if isRunning {
+                                    Image(systemName: "waveform")
+                                        .font(.system(size: 48))
+                                        .foregroundStyle(.white)
+                                        .symbolEffect(.pulse)
+                                }
+                                else {
+                                    Image(systemName: "waveform")
+                                        .font(.system(size: 48))
+                                        .foregroundStyle(.white)
+                                }
+
+
                         }
                     HeadphoneIndicatorView(isConnected: audioSession.isHeadphonesConnected)
                 }
             }
             .buttonStyle(.plain)
-            .padding(.bottom, 24)
         }
         .padding(.horizontal)
     }
 }
+
+
 
 #Preview {
     ConversationView(pair: LanguagePair(first: .init(identifier: "en"), second: .init(identifier: "de")))

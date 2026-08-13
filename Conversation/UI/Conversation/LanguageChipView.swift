@@ -20,11 +20,12 @@ struct LanguageChipView: View {
     private func chip(_ title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.caption.bold())
+                .font(.callout.bold())
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
                 .background(isSelected ? Color.accentColor : Color(.systemGray5), in: Capsule())
                 .foregroundStyle(isSelected ? .white : .primary)
+            
         }
         .buttonStyle(.plain)
     }
