@@ -84,17 +84,36 @@ actor FeedbackModelManager {
     /// `Conversation/Resources/LLMModels/gemma-3-270m-it-4bit/`.
     private static let bundledResourceName = "gemma-3-270m-it-4bit"
 
-    private var session: MLXLMCommon.ChatSession?
+    private var container: MLXLMCommon.ModelContainer?
 
     private var bundledDirectory: URL? {
         Bundle.main.url(forResource: Self.bundledResourceName, withExtension: nil)
     }
 
-    /// Loads the bundled model once and reuses the same session (and its
-    /// KV cache machinery) across turns. Cheap to call repeatedly once
-    /// loaded.
-    private func loadedSession() async throws -> MLXLMCommon.ChatSession {
-        if let session { return session }
+    /// Loads the bundled model weights once and reuses the same
+    /// `ModelContainer` across turns — the expensive part (JIT/graph setup,
+    /// weight loading). Cheap to call repeatedly once loaded.
+    ///
+    /// Deliberately does **not** cache a `ChatSession` alongside it. A
+    /// `ChatSession` is MLXLMCommon's *multi-turn conversational*
+    /// abstraction — every `respond(to:)` call on the same session
+    /// accumulates onto its KV cache/message history rather than starting
+    /// fresh. An earlier version of this method cached one `ChatSession`
+    /// here and reused it forever, which meant every turn's feedback
+    /// request silently continued the *same* unbounded conversation for
+    /// the app's whole process lifetime — growing latency the longer a
+    /// walk went on, no reset at conversation-session boundaries (stop/
+    /// start, language-pair change), and no cap against Gemma 3 270M's
+    /// 32768-token context window. Each coaching note is supposed to be an
+    /// independent judgment about one isolated utterance (see
+    /// `LanguageCoachService.prompt(for:)`, which already frames every
+    /// call as self-contained), so `generate(prompt:)` now builds a fresh
+    /// `ChatSession` per call instead — cheap (re-tokenizing a short
+    /// system prompt, not reloading the model) and keeps every call's
+    /// latency and behavior independent of how long the app has been
+    /// running or how many turns came before it.
+    private func loadedContainer() async throws -> MLXLMCommon.ModelContainer {
+        if let container { return container }
         guard let directory = bundledDirectory else {
             AppLog.error(.feedback, "FeedbackModelManager: \(Self.bundledResourceName) not found in app bundle")
             throw FeedbackModelError.modelNotBundled
@@ -102,12 +121,11 @@ actor FeedbackModelManager {
 
         AppLog.info(.feedback, "FeedbackModelManager: loading \(Self.bundledResourceName) from \(directory.path)")
         let start = Date()
-        let container = try await LLMModelFactory.shared.loadContainer(
+        let newContainer = try await LLMModelFactory.shared.loadContainer(
             from: directory, using: HuggingFaceTokenizerLoader())
-        let newSession = MLXLMCommon.ChatSession(container, instructions: LanguageCoachService.systemInstructions)
-        session = newSession
+        container = newContainer
         AppLog.info(.feedback, "FeedbackModelManager: ready in \(Date().timeIntervalSince(start))s")
-        return newSession
+        return newContainer
     }
 
     /// Triggers the model load ahead of time — same "eat the first-call
@@ -117,13 +135,15 @@ actor FeedbackModelManager {
     /// `FeedbackConfig.isEnabled` is true, unlike Whisper's unconditional
     /// prewarm.
     func prewarm() async throws {
-        _ = try await loadedSession()
+        _ = try await loadedContainer()
     }
 
-    /// Runs one turn of the coaching conversation and returns the model's
-    /// raw response text.
+    /// Runs one independent, stateless coaching request and returns the
+    /// model's raw response text — see `loadedContainer`'s doc comment for
+    /// why this builds a new `ChatSession` per call rather than reusing one.
     func generate(prompt: String) async throws -> String {
-        let session = try await loadedSession()
+        let container = try await loadedContainer()
+        let session = MLXLMCommon.ChatSession(container, instructions: LanguageCoachService.systemInstructions)
         return try await session.respond(to: prompt)
     }
 }

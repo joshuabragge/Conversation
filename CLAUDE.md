@@ -205,8 +205,21 @@ root-caused from a real log, not from reasoning about the code alone.
   bookkeeping), this one drives real multi-second MLX generation directly
   and needs to stay off the main actor to avoid UI jank. Requires a
   physical Apple Silicon device — MLX has no Simulator support, so this
-  can only be verified on-device, same as the rest of the pipeline. The
-  model is bundled *temporarily*, purely to speed up POC iteration (see
+  can only be verified on-device, same as the rest of the pipeline.
+  **Each turn's coaching call is stateless/one-shot, not a running
+  conversation** — the model weights (`ModelContainer`) load once and stay
+  cached, but `FeedbackModelManager.generate(prompt:)` builds a *fresh*
+  `MLXLMCommon.ChatSession` per call rather than reusing one. An earlier
+  version cached one `ChatSession` across every call, which meant every
+  turn silently continued the *same* unbounded conversation for the app's
+  whole process lifetime (growing latency the longer a walk went on, no
+  reset between conversation sessions or language-pair changes, no cap
+  against Gemma 3 270M's 32768-token context window) — `ChatSession` is
+  MLXLMCommon's multi-turn abstraction, not a one-shot completion call, so
+  reusing it silently opts into that. Keep it stateless unless a running,
+  bounded, session-scoped memory is deliberately designed in — don't
+  reintroduce a cached `ChatSession` as a "reuse the loaded model" shortcut.
+  The model is bundled *temporarily*, purely to speed up POC iteration (see
   `README.md`'s "AI Feedback coach (POC)" section) — revisit moving it to
   an optional `WhisperModelManager`-style Settings download if the feature
   sticks, and resolve the Gemma-license redistribution question (see
