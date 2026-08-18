@@ -100,6 +100,12 @@ final class ConversationLoopController: ObservableObject {
         // Start. See `prewarmLanguageModel()`'s doc comment for why this
         // used to land on the first spoken turn instead.
         prewarmLanguageModel()
+
+        // Unlike the above, only prewarm the feedback coach's model when
+        // the feature is actually on — it's bundled (see FeedbackConfig),
+        // but loading it into memory has a real cost that users who never
+        // enable the flag shouldn't pay just because it shipped on disk.
+        prewarmFeedbackModel()
     }
 
     func configure(translationService: TranslationService) {
@@ -134,6 +140,52 @@ final class ConversationLoopController: ObservableObject {
                 try await languageIdentifier.prewarm()
             } catch {
                 AppLog.error(.conversation, "prewarmLanguageModel: failed, will retry on first real use: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Triggers the feedback coach's model load ahead of time — same
+    /// "don't pay the first-call cost mid-conversation" reasoning as
+    /// `prewarmLanguageModel()`, called once from `init` when the flag is
+    /// already on, and again from Settings the moment the user flips it on
+    /// (see `SettingsView`'s `.onChange(of: aiFeedbackEnabled)`), so
+    /// turning the feature on doesn't make the very next turn pay for
+    /// loading the model.
+    func prewarmFeedbackModel() {
+        guard FeedbackConfig.isEnabled else { return }
+        Task {
+            do {
+                try await FeedbackModelManager.shared.prewarm()
+            } catch {
+                AppLog.error(.feedback, "prewarmFeedbackModel: failed, will retry on first real use: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Fires the feature-flagged local-LLM feedback coach in the
+    /// background for an already-completed, already-appended `turn` —
+    /// never awaited inline, same fire-and-forget shape as
+    /// `prewarmLanguageModel()`. Deliberately does **not** touch `state`:
+    /// unlike every other pipeline stage, this runs after the live turn
+    /// has already moved on toward `.speaking`, annotating a finished
+    /// history item rather than gating the current one — see
+    /// `TurnState`'s doc comment for why it models one whole-controller
+    /// state machine, not per-item status.
+    ///
+    /// A failure or timeout here just means `turn.feedback` stays `nil` —
+    /// this is a bonus annotation, never something the user-visible loop
+    /// waits on or reports an error for.
+    private func requestFeedback(for turn: ConversationTurn) {
+        Task {
+            do {
+                let feedback = try await withTimeout(seconds: FeedbackConfig.feedbackTimeout) {
+                    try await LanguageCoachService.feedback(for: turn)
+                }
+                guard let idx = history.firstIndex(where: { $0.id == turn.id }) else { return }
+                history[idx].feedback = feedback
+                persistCurrentSession()
+            } catch {
+                AppLog.error(.feedback, "requestFeedback: failed for turn \(turn.id): \(error.localizedDescription)")
             }
         }
     }
@@ -531,11 +583,15 @@ final class ConversationLoopController: ObservableObject {
                 translatedLanguage: targetLanguage.minimalIdentifier, translatedText: translated
             ))
             #endif
-            history.append(ConversationTurn(
+            let turn = ConversationTurn(
                 heardText: text, heardLanguage: spokenLanguage,
                 translatedText: translated, translatedLanguage: targetLanguage
-            ))
+            )
+            history.append(turn)
             persistCurrentSession()
+            if FeedbackConfig.isEnabled {
+                requestFeedback(for: turn)
+            }
 
             state = .speaking
             // Must fully release the input route before switching category

@@ -15,15 +15,27 @@ screen locked. See `README.md` for the full pitch and architecture.
 ```bash
 xcodegen generate                                                    # regenerate Conversation.xcodeproj from project.yml — see IMPORTANT below
 xcodebuild -project Conversation.xcodeproj -scheme Conversation \
-  -destination 'platform=iOS Simulator,name=iPhone 16' build         # build
+  -destination 'platform=iOS Simulator,name=iPhone 16' \
+  -skipPackagePluginValidation build                                 # build — see IMPORTANT below for the plugin flag
 xcodebuild -project Conversation.xcodeproj -scheme Conversation \
-  -destination 'platform=iOS Simulator,name=iPhone 16' test          # run all tests
+  -destination 'platform=iOS Simulator,name=iPhone 16' \
+  -skipPackagePluginValidation test                                  # run all tests
 ```
 
 **IMPORTANT**: `Conversation.xcodeproj` is generated and gitignored. After
 adding, removing, or renaming any `.swift` file, run `xcodegen generate`
 *before* building — a stale `.xcodeproj` will fail with "cannot find type
 in scope" for symbols that are actually defined and correct.
+
+**IMPORTANT**: every build/test command needs `-skipPackagePluginValidation`
+now that `mlx-swift-lm` (the AI Feedback coach's dependency, see below) is
+in the dependency graph — its `mlx-swift` dependency declares a build-tool
+plugin (`CudaBuild`, irrelevant to iOS/macOS, presumably meant only for
+Linux/CUDA builds) that `xcodebuild` otherwise refuses to run without
+explicit trust, failing the whole build with "Validate plug-in 'CudaBuild'
+in package 'mlx-swift'" before a single line of app code even compiles.
+This isn't specific to anything in this repo — same flag needed building
+mlx-swift-lm standalone.
 
 **IMPORTANT**: the bundled WhisperKit `tiny` model
 (`Conversation/Resources/WhisperModels/openai_whisper-tiny/`) is tracked via
@@ -33,7 +45,9 @@ first, that folder contains tiny LFS pointer text files instead of the real
 regardless (they're still real files at the right paths), but WhisperKit
 fails to load the model at runtime with a Core ML error that gives no hint
 the actual cause is a missing `git lfs pull`. If language-ID mysteriously
-fails only in a fresh checkout, check this first.
+fails only in a fresh checkout, check this first. The same applies to
+`Conversation/Resources/LLMModels/gemma-3-270m-it-4bit/` (the AI Feedback
+coach's bundled model, see below) if the "Coach my speaking" flag is on.
 
 ## Testing
 
@@ -164,6 +178,39 @@ root-caused from a real log, not from reasoning about the code alone.
   strings instead) — if a future model adds another `Locale.Language`
   field, follow the same pattern rather than trying default `Codable`
   synthesis on it directly.
+- **The AI Feedback coach (`FeedbackConfig.isEnabled`, off by default,
+  Settings > AI Feedback) is a second, independent local LLM
+  (Gemma 3 270M via MLX Swift) — not part of the WhisperKit/Apple
+  STT/Translation pipeline, and deliberately kept from touching it.**
+  `Conversation/Feedback/FeedbackModelManager.swift` owns loading the
+  bundled model (`ModelConfiguration(directory:)`/`LLMModelFactory`
+  loading straight from a local app-bundle folder, no `Downloader` or
+  network involved — see `project.yml`'s `type: folder` entry for
+  `Resources/LLMModels/gemma-3-270m-it-4bit`, same reasoning as the
+  bundled WhisperKit `tiny` model above); `LanguageCoachService.swift`
+  owns the actual coach persona/prompt. `ConversationLoopController.
+  requestFeedback(for:)` fires this as a non-blocking background `Task`
+  right after a turn is appended to `history` — never awaited inline, and
+  deliberately never touches `TurnState`/`state` (that machine models the
+  one live in-flight turn, not a per-history-item background annotation;
+  see `ConversationTurn.feedback`'s doc comment). `MLXLMCommon`
+  deliberately ships no tokenizer implementation of its own — apps bridge
+  their own `TokenizerLoader`, which is why
+  `FeedbackModelManager.swift` adapts swift-transformers' `Tokenizers`
+  module (already a transitive WhisperKit dependency, now also declared
+  directly in `project.yml` since a target can't `import` a product it
+  doesn't directly depend on) rather than something being missing/broken
+  upstream. `FeedbackModelManager` is its own `actor`, not `@MainActor`
+  like `WhisperModelManager` — unlike that class (pure download
+  bookkeeping), this one drives real multi-second MLX generation directly
+  and needs to stay off the main actor to avoid UI jank. Requires a
+  physical Apple Silicon device — MLX has no Simulator support, so this
+  can only be verified on-device, same as the rest of the pipeline. The
+  model is bundled *temporarily*, purely to speed up POC iteration (see
+  `README.md`'s "AI Feedback coach (POC)" section) — revisit moving it to
+  an optional `WhisperModelManager`-style Settings download if the feature
+  sticks, and resolve the Gemma-license redistribution question (see
+  `README.md`'s License section) before it leaves POC status.
 
 ## Non-obvious bugs already found once — don't reintroduce them
 

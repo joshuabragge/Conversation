@@ -9,6 +9,25 @@ packages:
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit
     from: "0.9.0"
+  # On-device LLM runtime for the (feature-flagged, off by default) local
+  # speaking-feedback coach — see FeedbackConfig.isEnabled and
+  # Conversation/Feedback/. Apple's own native Swift ML stack (Metal-
+  # accelerated), the natural fit for a pure Swift/SwiftUI app versus
+  # binding llama.cpp's C++ library directly. Requires a physical Apple
+  # Silicon device — no simulator support, same class of constraint as the
+  # rest of the device-dependent pipeline (STT/TTS/Bluetooth).
+  MLXSwiftLM:
+    url: https://github.com/ml-explore/mlx-swift-lm
+    from: "3.31.4"
+  # MLXLMCommon deliberately doesn't bundle a tokenizer implementation —
+  # `TokenizerLoader` is an app-supplied bridge protocol instead (see
+  # Conversation/Feedback/FeedbackModelManager.swift). swift-transformers'
+  # `Tokenizers` module is already resolved transitively via WhisperKit,
+  # but a target can only `import` a product it directly depends on, so it
+  # needs its own explicit package/product entry here too.
+  SwiftTransformers:
+    url: https://github.com/huggingface/swift-transformers
+    from: "1.1.9"
 
 targets:
   Conversation:
@@ -18,6 +37,7 @@ targets:
       - path: Conversation
         excludes:
           - "Resources/WhisperModels/openai_whisper-tiny/**"
+          - "Resources/LLMModels/gemma-3-270m-it-4bit/**"
       # Added as a separate folder reference (not a group) so Xcode copies
       # it into the app bundle as one intact directory tree instead of
       # flattening every .mlmodelc's internal files (coremldata.bin,
@@ -30,9 +50,26 @@ targets:
       - path: Conversation/Resources/WhisperModels/openai_whisper-tiny
         type: folder
         buildPhase: resources
+      # Same reasoning as the WhisperKit tiny model above: MLX loads a
+      # model from a real on-disk directory, so this needs to survive as
+      # one intact folder rather than a flattened group. Bundled
+      # *temporarily* to speed up POC iteration on the feature-flagged
+      # (off by default) local feedback coach — see FeedbackConfig and
+      # CLAUDE.md's "AI feedback coach" section for the plan to revisit
+      # this as a WhisperModelManager-style optional download if it
+      # sticks.
+      - path: Conversation/Resources/LLMModels/gemma-3-270m-it-4bit
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: WhisperKit
         product: WhisperKit
+      - package: MLXSwiftLM
+        product: MLXLLM
+      - package: MLXSwiftLM
+        product: MLXLMCommon
+      - package: SwiftTransformers
+        product: Tokenizers
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.joshuabragge.Conversation

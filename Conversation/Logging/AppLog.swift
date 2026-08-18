@@ -17,6 +17,10 @@ enum LogCategory: String, CaseIterable {
     /// exists in Release builds (harmless, just unused) since `AppLog`
     /// itself isn't `#if DEBUG`-gated.
     case debugCapture = "DebugCapture"
+    /// `FeedbackModelManager`/`LanguageCoachService` — the feature-flagged,
+    /// off-by-default local-LLM speaking-feedback coach. See
+    /// `FeedbackConfig.isEnabled`.
+    case feedback = "Feedback"
 }
 
 enum LogLevel: String {

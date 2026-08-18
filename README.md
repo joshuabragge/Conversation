@@ -90,7 +90,7 @@ local to the device.
 
 - Xcode 16.2+ (iOS 18.2 SDK)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) — the `.xcodeproj` is generated from `project.yml`, not checked in
-- [Git LFS](https://git-lfs.com) (`brew install git-lfs && git lfs install`) — the bundled WhisperKit `tiny` model (~75MB, see below) is stored via LFS, not as plain git blobs, to keep a normal clone fast
+- [Git LFS](https://git-lfs.com) (`brew install git-lfs && git lfs install`) — the bundled WhisperKit `tiny` model (~75MB, see below) is stored via LFS, not as plain git blobs, to keep a normal clone fast. The feature-flagged, off-by-default local-feedback-coach model (~190MB, see "AI Feedback coach (POC)" below) is bundled the same way
 - iOS 18.0+ deployment target (required by the dynamic `TranslationSession.Configuration` API — 17.4 only has a fixed-pair overload)
 - A real device with headphones for anything beyond a compile check — see [Simulator limitations](#simulator-limitations) below
 
@@ -110,10 +110,18 @@ git lfs install
 git lfs pull
 xcodegen generate
 xcodebuild -project Conversation.xcodeproj -scheme Conversation \
-  -destination 'platform=iOS Simulator,name=iPhone 16' build
+  -destination 'platform=iOS Simulator,name=iPhone 16' \
+  -skipPackagePluginValidation build
 ```
 
-**If Git LFS wasn't installed before you cloned**, `Conversation/Resources/WhisperModels/openai_whisper-tiny/` will contain tiny LFS *pointer* text files instead of the real model — the build will still succeed (they're still files at the right paths), but WhisperKit will fail to load the model at runtime with a confusing Core ML error, not an obviously-missing-file one. Run `git lfs install && git lfs pull` and rebuild if language-ID doesn't work in a fresh checkout.
+**`-skipPackagePluginValidation` is required**, not optional, once the AI
+Feedback coach's `mlx-swift-lm` dependency is in the graph — its own
+`mlx-swift` dependency declares a `CudaBuild` build-tool plugin (unused on
+iOS/macOS, presumably Linux/CUDA-only) that `xcodebuild` otherwise refuses
+to run untrusted, failing the build before any app code compiles. Not
+specific to this repo — same flag needed building `mlx-swift-lm` standalone.
+
+**If Git LFS wasn't installed before you cloned**, `Conversation/Resources/WhisperModels/openai_whisper-tiny/` will contain tiny LFS *pointer* text files instead of the real model — the build will still succeed (they're still files at the right paths), but WhisperKit will fail to load the model at runtime with a confusing Core ML error, not an obviously-missing-file one. Run `git lfs install && git lfs pull` and rebuild if language-ID doesn't work in a fresh checkout. The same failure mode applies to `Conversation/Resources/LLMModels/gemma-3-270m-it-4bit/` if you turn on the AI Feedback coach flag without having pulled LFS first.
 
 The WhisperKit `tiny` language-ID model ships inside the app itself (see
 "Why the WhisperKit tiny model is bundled" below), so it needs no network at
@@ -156,7 +164,8 @@ not in the simulator.
 
 ```bash
 xcodebuild -project Conversation.xcodeproj -scheme Conversation \
-  -destination 'platform=iOS Simulator,name=iPhone 16' test
+  -destination 'platform=iOS Simulator,name=iPhone 16' \
+  -skipPackagePluginValidation test
 ```
 
 Unit tests cover `VADSegmenter` (turn-segmentation hysteresis, against
@@ -177,6 +186,7 @@ Conversation/
   Translation/    Apple Translation framework bridge, language-pack checks
   Output/         Text-to-speech
   Conversation/   The central turn state machine
+  Feedback/       Feature-flagged local-LLM speaking-feedback coach (POC)
   History/        Persisted chat history store
   Models/         LanguagePair, ChatSession, on-device language-support detection
   Permissions/    Mic + speech-recognition auth
@@ -300,6 +310,44 @@ they can't identify non-English audio at all, which would silently break
 language-ID for any pair that isn't English-only. The binary model files
 themselves are tracked via **Git LFS**, not plain git blobs — see Setup
 above.
+
+### AI Feedback coach (POC)
+
+**Settings > AI Feedback > "Coach my speaking" — off by default.** A
+feature-flagged proof of concept, unrelated to the WhisperKit/Apple
+STT/Translation pipeline that actually drives the conversation: a second,
+much smaller on-device LLM ([Gemma 3
+270M](https://developers.googleblog.com/en/introducing-gemma-3-270m/),
+4-bit-quantized MLX build from
+[`mlx-community/gemma-3-270m-it-4bit`](https://huggingface.co/mlx-community/gemma-3-270m-it-4bit),
+~190MB) silently reviews what you just said and attaches a short
+grammar/naturalness note under that turn's chat bubble a moment later —
+entirely offline, and entirely optional. Runs via [MLX
+Swift](https://github.com/ml-explore/mlx-swift-lm) (`MLXLLM`/`MLXLMCommon`),
+Apple's own native Swift ML stack — chosen over binding llama.cpp's C++
+library directly (what [PocketPal
+AI](https://github.com/a-ghorbani/pocketpal-ai) does, from React Native)
+since it's the natural fit for a pure Swift/SwiftUI app. **Requires a
+physical Apple Silicon device — no simulator support**, same class of
+constraint as the rest of the device-dependent pipeline. See
+`Conversation/Feedback/` (`FeedbackModelManager`, `LanguageCoachService`)
+and `FeedbackConfig`.
+
+The model is bundled the same way as WhisperKit's `tiny` model (a
+`project.yml` folder-reference resource, tracked via Git LFS) — but
+*temporarily*, specifically to speed up POC iteration, not a settled
+decision. Since the feature defaults off, this permanently adds ~190MB to
+every install regardless of whether anyone ever turns it on; if it sticks
+around, revisit moving it to a `WhisperModelManager`-style optional
+Settings download instead. The model itself is only loaded into memory
+(and only then does it cost CPU/GPU/RAM) once the flag is switched on —
+bundling only affects on-disk size.
+
+MLXLMCommon deliberately doesn't ship a tokenizer implementation —
+`Conversation/Feedback/FeedbackModelManager.swift` bridges it to
+[swift-transformers](https://github.com/huggingface/swift-transformers)'
+`Tokenizers` module, which was already a transitive WhisperKit dependency
+and is now also a direct one.
 
 ### Allowing Apple's servers
 
@@ -552,3 +600,14 @@ Core ML conversions from Argmax's
 [`argmaxinc/whisperkit-coreml`](https://huggingface.co/argmaxinc/whisperkit-coreml),
 derived from OpenAI's (also MIT-licensed) Whisper — not covered by this
 repo's own license above, and not the copyright of this project.
+
+The bundled AI Feedback coach model weights
+(`Conversation/Resources/LLMModels/gemma-3-270m-it-4bit/`, see "AI Feedback
+coach (POC)" above) are Google's Gemma 3 270M, distributed under the
+[Gemma Terms of Use](https://ai.google.dev/gemma/terms) — **not MIT, and
+not covered by this repo's PolyForm license above.** Unlike Whisper's MIT
+license, Gemma's terms impose their own redistribution/use conditions
+(including a Prohibited Use Policy); this hasn't had a real legal review
+for redistribution via this bundling approach, since the feature is still
+a POC. Worth resolving properly (or reconsidering permanent bundling in
+favor of an on-demand download) before this feature leaves POC status.

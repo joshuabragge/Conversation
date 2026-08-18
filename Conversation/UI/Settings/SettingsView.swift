@@ -35,6 +35,9 @@ struct SettingsView: View {
     // Same key as RecognitionConfig.allowServerBasedRecognition — see its
     // doc comment for what this trades away and why it stays opt-in.
     @AppStorage("com.joshuabragge.Conversation.allowServerBasedRecognition") private var allowServerBasedRecognition = false
+    // Same key as FeedbackConfig.isEnabled — see its doc comment for why
+    // this POC feature stays off by default.
+    @AppStorage("com.joshuabragge.Conversation.aiFeedbackEnabled") private var aiFeedbackEnabled = false
 
     init(pair: LanguagePair, controller: ConversationLoopController) {
         self.pair = pair
@@ -105,6 +108,14 @@ struct SettingsView: View {
                     Text("Transcription")
                 }
 
+                Section {
+                    Toggle("Coach my speaking", isOn: $aiFeedbackEnabled)
+                    Text("POC: an on-device AI model (Gemma 3 270M) quietly reviews what you said and adds a short grammar/naturalness note under it — entirely offline. Off by default; adds a bundled model to this build.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("AI Feedback")
+                }
 
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
@@ -186,6 +197,14 @@ struct SettingsView: View {
                 // background, so it's already warm by the time there's a
                 // turn to use it.
                 controller.prewarmLanguageModel()
+            }
+            .onChange(of: aiFeedbackEnabled) { _, newValue in
+                // Load the model right when the toggle flips on, same
+                // "don't make the next turn pay for it" reasoning as the
+                // detection-model prewarm above — no-ops if already off.
+                if newValue {
+                    controller.prewarmFeedbackModel()
+                }
             }
             .onChange(of: scenePhase) { _, newPhase in
                 if newPhase == .active {

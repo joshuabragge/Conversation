@@ -6,9 +6,26 @@ struct TranscriptBubbleView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             bubbleInput(text: turn.heardText, language: turn.heardLanguage, tint: .accentColor)
+            if let feedback = turn.feedback {
+                feedbackLine(feedback)
+            }
             Divider()
             bubbleTranslated(text: turn.translatedText, language: turn.translatedLanguage, tint: .secondary)
         }
+    }
+
+    /// The feature-flagged local-LLM coach's note on `heardText`
+    /// (`FeedbackConfig.isEnabled`, `Conversation/Feedback/`), populated
+    /// asynchronously a moment after the bubble first appears — the first
+    /// "arrives later" field on `ConversationTurn`, so it fades in rather
+    /// than popping, same idiom `StatusBannerView` uses for its transient
+    /// status text.
+    private func feedbackLine(_ text: String) -> some View {
+        Label(text, systemImage: "sparkles")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .transition(.opacity)
     }
     
     private func bubbleInput(text: String, language: Locale.Language, tint: Color) -> some View {
