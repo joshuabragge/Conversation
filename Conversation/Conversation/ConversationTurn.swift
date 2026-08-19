@@ -11,8 +11,9 @@ struct ConversationTurn: Identifiable, Equatable, Codable {
     let heardLanguage: Locale.Language
     let translatedText: String
     let translatedLanguage: Locale.Language
-    /// Short coaching note on `heardText`, filled in asynchronously by the
-    /// feature-flagged local-LLM feedback coach (`FeedbackConfig.isEnabled`,
+    /// Corrected, same-language version of `heardText`, filled in
+    /// asynchronously by the feature-flagged local-LLM feedback coach
+    /// (`FeedbackConfig.isEnabled`,
     /// `Conversation/Feedback/`) a moment after the turn is first appended
     /// — `nil` until then, and permanently `nil` if the feature is off or
     /// generation failed. The only `var` field on this otherwise-immutable

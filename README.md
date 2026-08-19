@@ -320,9 +320,13 @@ much smaller on-device LLM ([Gemma 3
 270M](https://developers.googleblog.com/en/introducing-gemma-3-270m/),
 4-bit-quantized MLX build from
 [`mlx-community/gemma-3-270m-it-4bit`](https://huggingface.co/mlx-community/gemma-3-270m-it-4bit),
-~190MB) silently reviews what you just said and attaches a short
-grammar/naturalness note under that turn's chat bubble a moment later —
-entirely offline, and entirely optional. Runs via [MLX
+~190MB) silently corrects what you just said — same language, more
+natural phrasing — and shows the corrected version under that turn's chat
+bubble a moment later — entirely offline, and entirely optional. Each
+correction is a stateless, one-shot call (no running conversation, no
+memory across turns) and is delivered in the same language as the input,
+never translated — see `LanguageCoachService.systemInstructions`' few-shot
+examples for the exact task the model is prompted with. Runs via [MLX
 Swift](https://github.com/ml-explore/mlx-swift-lm) (`MLXLLM`/`MLXLMCommon`),
 Apple's own native Swift ML stack — chosen over binding llama.cpp's C++
 library directly (what [PocketPal

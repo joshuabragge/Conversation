@@ -110,7 +110,7 @@ struct SettingsView: View {
 
                 Section {
                     Toggle("Coach my speaking", isOn: $aiFeedbackEnabled)
-                    Text("POC: an on-device AI model (Gemma 3 270M) quietly reviews what you said and adds a short grammar/naturalness note under it — entirely offline. Off by default; adds a bundled model to this build.")
+                    Text("POC: an on-device AI model (Gemma 3 270M) quietly corrects what you said — same language, more natural phrasing — and shows it under your line. Entirely offline. Off by default; adds a bundled model to this build.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: {
