@@ -22,6 +22,22 @@ enum FeedbackConfig {
         set { UserDefaults.standard.set(newValue, forKey: isEnabledKey) }
     }
 
+    /// Debugging knob, not a user-facing setting: when `true`,
+    /// `FeedbackModelManager` skips `ChatSession`'s `instructions:`
+    /// (system-role) mechanism entirely and instead folds
+    /// `LanguageCoachService.systemInstructions` directly into the single
+    /// user-role prompt. Exists to A/B whether Gemma 3 270M's system-role
+    /// handling (verified structurally correct against MLXLMCommon's
+    /// `DefaultMessageGenerator` and Gemma's own chat template — see
+    /// `FeedbackModelManager.generate(prompt:)`) is actually reliable in
+    /// practice on a model this small, as opposed to just correct on
+    /// paper. Off by default because the params fix
+    /// (`FeedbackModelManager.generateParameters`: greedy decoding, capped
+    /// tokens) is the more likely real fix — flip this only after
+    /// confirming via a Debug Log capture that greedy decoding alone
+    /// didn't resolve wrong-language output.
+    static let foldSystemPromptIntoUserTurn = false
+
     /// How long to wait on a feedback generation call before giving up.
     /// Mirrors `RecognitionConfig.translationTimeout`'s role, but feedback
     /// is a background, non-blocking annotation (see

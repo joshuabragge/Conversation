@@ -138,12 +138,55 @@ actor FeedbackModelManager {
         _ = try await loadedContainer()
     }
 
+    /// Deterministic, bounded generation for a narrow "repeat this back,
+    /// corrected" task — never tuned before now, which meant every call
+    /// silently used `GenerateParameters`' defaults: `temperature: 0.6`
+    /// (stochastic sampling), unrestricted `topP`, **no `maxTokens` cap**,
+    /// and no repetition penalty. That combination is a plausible enough
+    /// explanation on its own for inconsistent/wrong-looking output on a
+    /// 270M model doing a format-constrained task — greedy decoding
+    /// (`temperature: 0`) is what "corrected repeat of this exact input"
+    /// actually calls for, not creative sampling. `maxTokens` is a safety
+    /// cap against runaway generation for a task that should only ever
+    /// produce one short phrase; `repetitionPenalty` guards against the
+    /// repeat-loop failure mode small models are prone to. If real usage
+    /// shows these need tuning, promote them to `FeedbackConfig`
+    /// UserDefaults knobs the way `RecognitionConfig`'s VAD constants are —
+    /// don't hand-tune blind without a real device capture to iterate against.
+    private static let generateParameters = MLXLMCommon.GenerateParameters(
+        maxTokens: 120,
+        temperature: 0,
+        repetitionPenalty: 1.3
+    )
+
     /// Runs one independent, stateless coaching request and returns the
     /// model's raw response text — see `loadedContainer`'s doc comment for
     /// why this builds a new `ChatSession` per call rather than reusing one.
+    /// Logs both the exact prompt sent and the raw, untrimmed response at
+    /// `.debug` — visible via Settings > Debug Log — specifically so a
+    /// future "it's not doing what we told it" report can be root-caused
+    /// from an actual capture instead of guessed at again.
     func generate(prompt: String) async throws -> String {
         let container = try await loadedContainer()
-        let session = MLXLMCommon.ChatSession(container, instructions: LanguageCoachService.systemInstructions)
-        return try await session.respond(to: prompt)
+        // See FeedbackConfig.foldSystemPromptIntoUserTurn's doc comment —
+        // off by default; the `instructions:` (system-role) path is
+        // structurally correct (verified against MLXLMCommon's
+        // DefaultMessageGenerator + Gemma's own chat template), so this is
+        // an A/B fallback, not the expected fix.
+        let session: MLXLMCommon.ChatSession
+        let effectivePrompt: String
+        if FeedbackConfig.foldSystemPromptIntoUserTurn {
+            session = MLXLMCommon.ChatSession(container, generateParameters: Self.generateParameters)
+            effectivePrompt = "\(LanguageCoachService.systemInstructions)\n\n\(prompt)"
+        } else {
+            session = MLXLMCommon.ChatSession(
+                container, instructions: LanguageCoachService.systemInstructions,
+                generateParameters: Self.generateParameters)
+            effectivePrompt = prompt
+        }
+        AppLog.debug(.feedback, "generate: foldSystemPromptIntoUserTurn=\(FeedbackConfig.foldSystemPromptIntoUserTurn) | prompt=\(effectivePrompt)")
+        let response = try await session.respond(to: effectivePrompt)
+        AppLog.debug(.feedback, "generate: raw response=\(response)")
+        return response
     }
 }

@@ -219,6 +219,31 @@ root-caused from a real log, not from reasoning about the code alone.
   reusing it silently opts into that. Keep it stateless unless a running,
   bounded, session-scoped memory is deliberately designed in — don't
   reintroduce a cached `ChatSession` as a "reuse the loaded model" shortcut.
+  **`ChatSession`'s `GenerateParameters` default to `temperature: 0.6`
+  (stochastic sampling), no `maxTokens` cap, and no repetition penalty —
+  wrong for a narrow, deterministic "repeat this back, corrected" task.**
+  A real bug report (feedback consistently translating instead of
+  correcting, surviving an earlier prompt-contradiction fix) traced to
+  this: `FeedbackModelManager.generateParameters` now sets
+  `temperature: 0` (greedy/deterministic), `maxTokens: 120` (safety cap
+  against runaway generation), and `repetitionPenalty: 1.3` (guards the
+  repeat-loop failure mode small models are prone to). Before assuming a
+  future "the model isn't doing what the prompt says" report is a prompt
+  or model-capability problem, check whether `GenerateParameters` is still
+  set explicitly rather than left at MLXLMCommon's stochastic defaults —
+  this class of bug looks exactly like "the model ignored the prompt" from
+  the outside. `FeedbackConfig.foldSystemPromptIntoUserTurn` (off by
+  default) exists as an A/B fallback that skips `ChatSession`'s
+  `instructions:` (system-role) mechanism in favor of folding
+  `systemInstructions` into a single user-role prompt — verified *not*
+  the likely cause first (`DefaultMessageGenerator` + Gemma 3's own chat
+  template correctly merge a system message into the first user turn, per
+  Gemma's official template logic, not an MLX invention), so try the
+  generation-parameters fix and a real Debug Log capture before flipping
+  this. `FeedbackModelManager.generate(prompt:)` now logs the exact
+  prompt sent and the raw, untrimmed response at `.debug` — pull a Debug
+  Log capture before guessing at the next one of these, same rule as
+  everything else in this file.
   The model is bundled *temporarily*, purely to speed up POC iteration (see
   `README.md`'s "AI Feedback coach (POC)" section) — revisit moving it to
   an optional `WhisperModelManager`-style Settings download if the feature
